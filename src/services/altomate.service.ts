@@ -3,7 +3,7 @@ import { config } from "../config"
 /** One organization the owner can manage in AltomateHR. */
 export type AltomateOrg = { id: string; name: string }
 
-/** Identity returned by AltomateHR's POST /api/v1/auth/verify. */
+/** Identity returned by AltomateHR's POST /auth/verify. */
 export type AltomateUser = {
   id: string
   name: string
@@ -14,15 +14,23 @@ export type AltomateUser = {
   organizations: AltomateOrg[]
 }
 
-/** Result of GET /api/v1/whoami — token introspection. */
+/** Result of GET /whoami — token introspection. */
 export type WhoamiResult = {
   organizationId: string
-  tokenName: string
+  tokenName: string | null
   scopes: string[]
 }
 
+/** AltomateHR's error text, from `{ message }` or `{ error: { message } }`. */
+async function errorMessage(res: Response): Promise<string> {
+  const body = (await res.json().catch(() => null)) as
+    | { message?: string; error?: { message?: string } }
+    | null
+  return body?.error?.message ?? body?.message ?? ""
+}
+
 /**
- * Low-level call to an AltomateHR /api/v1 endpoint with a bearer token.
+ * Low-level call to an AltomateHR API endpoint with a bearer token.
  * Every ABPay → AltomateHR request funnels through here.
  */
 export async function altomateFetch(
@@ -50,55 +58,44 @@ export async function verifyCredentials(
   email: string,
   password: string,
 ): Promise<AltomateUser | null> {
-  const res = await altomateFetch(config.altomate.authToken, "/api/v1/auth/verify", {
+  const res = await altomateFetch(config.altomate.authToken, "/auth/verify", {
     method: "POST",
     body: JSON.stringify({ email, password }),
   })
 
   if (res.status === 200) {
-    const json = (await res.json()) as {
-      data: {
-        id: string
-        name: string
-        email: string
-        role: string
-        organizationId?: string | null
-        organizationName?: string | null
-        organizations?: AltomateOrg[]
-      }
+    const d = (await res.json()) as {
+      id: string
+      name: string
+      email: string
+      role: string
+      organizationId?: string | null
+      organizationName?: string | null
+      organizations?: Array<{ id: string; name: string }>
     }
-    const d = json.data
     return {
       id: d.id,
       name: d.name,
       email: d.email,
-      role: d.role,
+      // v2 says "Owner" / "Admin"; ABPay has always shown them upper-case.
+      role: d.role.toUpperCase(),
       organizationId: d.organizationId ?? null,
       organizationName: d.organizationName ?? null,
-      // Tolerate an older AltomateHR that doesn't return the list yet.
-      organizations: d.organizations ?? [],
+      organizations: (d.organizations ?? []).map((o) => ({ id: o.id, name: o.name })),
     }
   }
   if (res.status === 401 || res.status === 403) {
-    // Distinguish an APP-credential problem (bad master key / per-org token
-    // / malformed header — NOBODY can log in) from a USER problem (wrong
-    // password, or not an admin). AltomateHR uses a fixed set of messages
-    // for the former; match those precisely so a user-authorization 403
-    // (which mentions "token belongs to") isn't misread as a bad token.
-    const body = (await res.json().catch(() => null)) as
-      | { error?: { message?: string } }
-      | null
-    const message = body?.error?.message ?? ""
-    if (
-      /invalid or revoked|requires a master api key|malformed authorization|empty token/i.test(
-        message,
-      )
-    ) {
-      throw new Error(
-        `AltomateHR rejected ABPay's access credential (${message.trim()})`,
-      )
+    // Distinguish an APP-credential problem (bad or revoked master key —
+    // NOBODY can log in) from a USER problem (wrong password, not an admin).
+    // AltomateHR says "Invalid or revoked …" only for the former.
+    const message = await errorMessage(res)
+    if (/invalid or revoked/i.test(message)) {
+      throw new Error(`AltomateHR rejected ABPay's access credential (${message.trim()})`)
     }
     return null
+  }
+  if (res.status === 429) {
+    throw new Error("Too many sign-in attempts — wait a minute and try again.")
   }
 
   const text = await res.text().catch(() => "")
@@ -109,19 +106,19 @@ export async function verifyCredentials(
 
 /**
  * Fetch the owner's AltomateHR organizations on demand (for the Refresh
- * button) via POST /api/v1/auth/organizations — the same list login
- * returns, but WITHOUT the password. Authenticated with the app bootstrap
- * token. Throws on any non-200 so the caller can surface the failure.
+ * button) via POST /auth/organizations — the same list login returns, but
+ * WITHOUT the password. Authenticated with the app bootstrap (master) key.
+ * Throws on any non-200 so the caller can surface the failure.
  */
 export async function fetchOwnerOrganizations(userId: string): Promise<AltomateOrg[]> {
   const res = await altomateFetch(
     config.altomate.authToken,
-    "/api/v1/auth/organizations",
+    "/auth/organizations",
     { method: "POST", body: JSON.stringify({ userId }) },
   )
   if (res.status === 200) {
-    const json = (await res.json()) as { data: { organizations?: AltomateOrg[] } }
-    return json.data.organizations ?? []
+    const json = (await res.json()) as { organizations?: Array<{ id: string; name: string }> }
+    return (json.organizations ?? []).map((o) => ({ id: o.id, name: o.name }))
   }
   const text = await res.text().catch(() => "")
   throw new Error(
@@ -130,18 +127,22 @@ export async function fetchOwnerOrganizations(userId: string): Promise<AltomateO
 }
 
 /**
- * Introspect a wp_live_* token via GET /api/v1/whoami — used to validate a
+ * Introspect a wp_live_* token via GET /whoami — used to validate a
  * pasted token before storing it (checks validity + which org it's for).
  *   - 200 → { organizationId, scopes, ... }
  *   - 401/403 → null (invalid/revoked)
  *   - else → throw
  */
 export async function whoami(token: string): Promise<WhoamiResult | null> {
-  const res = await altomateFetch(token, "/api/v1/whoami")
+  const res = await altomateFetch(token, "/whoami")
 
   if (res.status === 200) {
-    const json = (await res.json()) as { data: WhoamiResult }
-    return json.data
+    const d = (await res.json()) as {
+      organizationId: string
+      tokenName?: string | null
+      scopes?: string[]
+    }
+    return { organizationId: d.organizationId, tokenName: d.tokenName ?? null, scopes: d.scopes ?? [] }
   }
   if (res.status === 401 || res.status === 403) {
     return null
@@ -182,65 +183,43 @@ export type AltomatePayrollRun = {
 }
 
 /**
- * List an org's payroll runs via GET /api/v1/payroll-runs. Needs the
- * token's `payroll:read` scope. Ordering is left to the caller. Throws
- * `AltomateApiError` on 401 (auth) / 403 (scope) / anything else (down).
+ * List an org's payroll runs via GET /payroll/runs (the same list AltomateHR's
+ * own Payroll screen shows). Needs the token's `payroll:read` scope and the
+ * company's Payroll module. Ordering is left to the caller.
  */
 export async function listPayrollRuns(token: string): Promise<AltomatePayrollRun[]> {
-  let res: Response
-  try {
-    res = await altomateFetch(token, "/api/v1/payroll-runs?limit=200")
-  } catch {
-    throw new AltomateApiError("down", "Couldn't reach AltomateHR.")
-  }
-
-  if (res.status === 200) {
-    const json = (await res.json()) as {
-      data: Array<{
-        id: string
-        periodYear: number
-        periodMonth: number
-        status: AltomatePayrollRunStatus
-        totals?: {
-          gross?: number | null
-          net?: number | null
-          employeeCount?: number | null
-        }
-        submittedAt?: string | null
-        createdAt: string
-      }>
-    }
-    return json.data.map((r) => ({
-      id: r.id,
-      periodYear: r.periodYear,
-      periodMonth: r.periodMonth,
-      status: r.status,
-      gross: r.totals?.gross ?? null,
-      net: r.totals?.net ?? null,
-      employeeCount: r.totals?.employeeCount ?? null,
-      submittedAt: r.submittedAt ?? null,
-      createdAt: r.createdAt,
-    }))
-  }
-  if (res.status === 401) {
-    throw new AltomateApiError("auth", "Token was rejected — reconnect this company.")
-  }
-  if (res.status === 403) {
-    throw new AltomateApiError(
-      "scope",
-      "Token can't read payroll runs (missing payroll:read scope).",
-    )
-  }
-  const text = await res.text().catch(() => "")
-  throw new AltomateApiError("down", `AltomateHR /payroll-runs ${res.status}: ${text.slice(0, 160)}`)
+  const data = await altomateGet<
+    Array<{
+      id: string
+      periodYear: number
+      periodMonth: number
+      status: AltomatePayrollRunStatus
+      totalGross?: number | null
+      totalNet?: number | null
+      employeeCount?: number | null
+      submittedAt?: string | null
+      createdAt: string
+    }>
+  >(token, "/payroll/runs", "Token can't read payroll runs (missing payroll:read scope).")
+  return data.map((r) => ({
+    id: r.id,
+    periodYear: r.periodYear,
+    periodMonth: r.periodMonth,
+    status: r.status,
+    gross: r.totalGross ?? null,
+    net: r.totalNet ?? null,
+    employeeCount: r.employeeCount ?? null,
+    submittedAt: r.submittedAt ?? null,
+    createdAt: r.createdAt,
+  }))
 }
 
 /**
- * GET an AltomateHR endpoint that returns `{ data }`, mapping the standard
+ * GET an AltomateHR endpoint that returns a JSON body, mapping the standard
  * error statuses to a categorised `AltomateApiError`. `missingScope` is the
  * message shown on a 403.
  */
-async function altomateGetData<T>(
+async function altomateGet<T>(
   token: string,
   path: string,
   missingScope: string,
@@ -252,8 +231,7 @@ async function altomateGetData<T>(
     throw new AltomateApiError("down", "Couldn't reach AltomateHR.")
   }
   if (res.status === 200) {
-    const json = (await res.json()) as { data: T }
-    return json.data
+    return (await res.json()) as T
   }
   if (res.status === 401) {
     throw new AltomateApiError("auth", "Token was rejected — reconnect this company.")
@@ -267,41 +245,37 @@ async function altomateGetData<T>(
 
 /** One AltomateHR employee, trimmed to what matching needs. */
 export type AltomateEmployee = {
+  /** AltomateHR user id. */
   id: string
   name: string
+  /** The employee number — what the timesheet's staff code matches. */
   employeeId: string
-  projects: Array<{ id: string; name: string }>
 }
 
 /**
- * List an org's employees (needs the token's `employees:read` scope).
- * Requests the max page size (200) — Ayu Borneo companies are well under
- * that; `hasMore` on the response would flag if a company ever exceeds it.
+ * List an org's staff via GET /employees. Employees and supervisors only —
+ * the people on payroll; admins and owners are not on the timesheet.
  */
 export async function listEmployees(token: string): Promise<AltomateEmployee[]> {
-  const data = await altomateGetData<
-    Array<{
-      id: string
-      name: string
-      employeeId: string
-      projects?: Array<{ id: string; name: string }>
-    }>
-  >(token, "/api/v1/employees?limit=200", "Token can't read employees (missing employees:read scope).")
-  return data.map((e) => ({
-    id: e.id,
-    name: e.name,
-    employeeId: e.employeeId,
-    projects: e.projects ?? [],
-  }))
+  const data = await altomateGet<
+    Array<{ id: string; name: string; employeeNumber?: string | null; role: string }>
+  >(token, "/employees", "Token can't read employees (missing employees:read scope).")
+  return data
+    .filter((e) => e.role === "Employee" || e.role === "Supervisor")
+    .map((e) => ({ id: e.id, name: e.name, employeeId: e.employeeNumber ?? "" }))
 }
 
 /** One AltomateHR project, trimmed to what matching needs. */
 export type AltomateProject = { id: string; name: string; status: string | null }
 
-/** List an org's projects (needs the token's `projects:read` scope). */
+/** List an org's active projects via GET /projects (needs `projects:read`). */
 export async function listProjects(token: string): Promise<AltomateProject[]> {
-  const data = await altomateGetData<
-    Array<{ id: string; name: string; status?: string | null }>
-  >(token, "/api/v1/projects", "Token can't read projects (missing projects:read scope).")
-  return data.map((p) => ({ id: p.id, name: p.name, status: p.status ?? null }))
+  const data = await altomateGet<Array<{ id: string; name: string; isArchived?: boolean }>>(
+    token,
+    "/projects",
+    "Token can't read projects (missing projects:read scope).",
+  )
+  return data
+    .filter((p) => !p.isArchived)
+    .map((p) => ({ id: p.id, name: p.name, status: "ACTIVE" }))
 }
