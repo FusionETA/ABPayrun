@@ -8,6 +8,7 @@ import type { AppEnv } from "./lib/hono-env"
 import { onError } from "./middleware/error"
 import { authRoutes } from "./routes/auth.routes"
 import { companiesRoutes } from "./routes/companies.routes"
+import { importsRoutes } from "./routes/imports.routes"
 import { runsRoutes } from "./routes/runs.routes"
 
 const app = new Hono<AppEnv>()
@@ -25,6 +26,7 @@ if (!config.isProd) {
 }
 app.route("/", companiesRoutes)
 app.route("/", runsRoutes)
+app.route("/", importsRoutes)
 
 // Ensure the schema exists before we start accepting requests.
 await migrate()

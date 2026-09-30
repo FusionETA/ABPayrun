@@ -161,10 +161,12 @@ export function ConvertPreview({
   month,
   parsed,
   report,
+  importId,
 }: {
   month: Period
   parsed: ParsedTimesheet
   report: ValidationReport
+  importId: number
 }) {
   return (
     <div>
@@ -193,14 +195,17 @@ export function ConvertPreview({
               <CheckIcon /> Ready to run
             </h2>
             <p class="mt-1 text-sm text-emerald-700">
-              Every company, employee, and outlet matched AltomateHR. Nothing is
-              posted until you run — and it runs all companies together or not at
-              all.
+              Every company, employee, and outlet matched AltomateHR. Next, choose
+              what each timesheet column posts as, then review exactly what will be
+              sent. Nothing is posted until you confirm.
             </p>
           </div>
-          <span class="press inline-flex cursor-not-allowed items-center gap-2 rounded-2xl bg-brand/40 px-5 py-2.5 text-sm font-semibold text-white">
-            Run payroll → (posting lands next)
-          </span>
+          <a
+            href={`/imports/${importId}/mapping`}
+            class="press inline-flex items-center gap-2 rounded-2xl bg-brand hover:bg-[#3f1670] px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand/30"
+          >
+            Next: map columns →
+          </a>
         </div>
       ) : (
         <div class="mb-6 rounded-3xl border border-red-200/70 bg-red-50/80 p-6">

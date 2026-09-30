@@ -128,6 +128,33 @@ export async function migrate(): Promise<void> {
     ) ENGINE=InnoDB
   `)
 
+  // A posting result: payslip count, totals, skipped people, salary changes.
+  await addColumnIfMissing("posted_run", "summary_json", "JSON NULL")
+
+  // The uploaded timesheet, parsed, kept between the preview, column-mapping,
+  // review and post steps (one per import). Re-uploading replaces it.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS import_payload (
+      import_id   INT PRIMARY KEY,
+      parsed_json LONGTEXT NOT NULL,
+      updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      CONSTRAINT fk_import_payload_import FOREIGN KEY (import_id)
+        REFERENCES import(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB
+  `)
+
+  // Which AltomateHR pay item each timesheet column posts as. One row per
+  // column; a NULL category means "don't import this column". Remembered
+  // across months so the mapping is set once.
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS column_mapping (
+      column_key    VARCHAR(40) PRIMARY KEY,
+      category_code VARCHAR(60) NULL,
+      updated_by    VARCHAR(255),
+      updated_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB
+  `)
+
   // Owner's AltomateHR companies + their (encrypted) API token. Synced
   // from /auth/verify at login; the token is pasted per-company in the UI.
   await pool.query(`
@@ -157,4 +184,16 @@ export async function migrate(): Promise<void> {
       PRIMARY KEY (altomate_org_id, kind)
     ) ENGINE=InnoDB
   `)
+}
+
+/** `CREATE TABLE IF NOT EXISTS` never adds a column to an existing table. */
+async function addColumnIfMissing(table: string, column: string, definition: string) {
+  const [rows] = await pool.query<mysql.RowDataPacket[]>(
+    `SELECT 1 FROM information_schema.COLUMNS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table AND COLUMN_NAME = :column`,
+    { table, column },
+  )
+  if (rows.length === 0) {
+    await pool.query(`ALTER TABLE \`${table}\` ADD COLUMN \`${column}\` ${definition}`)
+  }
 }

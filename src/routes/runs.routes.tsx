@@ -2,8 +2,17 @@ import { Hono } from "hono"
 
 import type { ParsedTimesheet } from "../domain/timesheet"
 import type { AppEnv } from "../lib/hono-env"
+import { periodLabel } from "../lib/period"
 import { requireAuth } from "../middleware/auth.middleware"
 import { listCompanies } from "../repositories/company.repository"
+import {
+  createImport,
+  findImportByPeriod,
+  latestImport,
+  resetImport,
+  saveImportPayload,
+} from "../repositories/import.repository"
+import { clearRunsForImport } from "../repositories/run.repository"
 import { getRunsOverview } from "../services/runs.service"
 import { parseTimesheet } from "../services/timesheet.service"
 import { validateTimesheet } from "../services/validate.service"
@@ -71,9 +80,27 @@ runsRoutes.get("/convert", requireAuth, async (c) => {
     }
   }
 
+  // A month that was started but not fully posted: offer to carry on.
+  const last = await latestImport()
+  const resume =
+    last && last.status !== "POSTED"
+      ? {
+          id: last.id,
+          label: periodLabel({ year: last.period_year, month: last.period_month }),
+          status: last.status,
+        }
+      : null
+
   return c.html(
-    <Layout title="Convert" user={{ name: user.name, email: user.email }}>
+    <Layout
+      title="Convert"
+      user={{ name: user.name, email: user.email }}
+      flash={
+        c.req.query("err") ? { type: "err", msg: c.req.query("err")! } : null
+      }
+    >
       <ConvertPage
+        resume={resume}
         month={allowed}
         companies={overview.companies.filter((v) => v.connected && !v.error)}
         reason={allowed ? null : reason}
@@ -85,8 +112,9 @@ runsRoutes.get("/convert", requireAuth, async (c) => {
 
 /**
  * Convert flow (POST): parse the uploaded timesheet, validate every company
- * / employee / outlet against AltomateHR, and render the preview. Nothing is
- * posted here — the preview's Run action (all-or-nothing) is the next build.
+ * / employee / outlet against AltomateHR, save it as the month's import and
+ * render the preview. Nothing is posted here — that's /imports/:id/post,
+ * after the column mapping and the review.
  */
 runsRoutes.post("/convert", requireAuth, async (c) => {
   const user = c.get("user")
@@ -100,20 +128,43 @@ runsRoutes.post("/convert", requireAuth, async (c) => {
     return c.redirect("/convert?uploadError=nofile")
   }
 
+  const companies = await listCompanies()
   let parsed: ParsedTimesheet
   try {
     const buf = Buffer.from(await file.arrayBuffer())
-    parsed = parseTimesheet(buf)
+    parsed = parseTimesheet(
+      buf,
+      companies.flatMap((co) => (co.code ? [co.code] : [])),
+    )
   } catch (err) {
     console.error("[abpay] timesheet parse failed:", err)
     return c.redirect("/convert?uploadError=parse")
   }
 
-  const report = await validateTimesheet(parsed, await listCompanies())
+  const report = await validateTimesheet(parsed, companies)
+
+  // Keep the upload as this month's import, so the column-mapping, review
+  // and post steps can come back to it. The month's runs can't exist yet
+  // (the month only opens once every company's latest run is submitted), so
+  // any earlier attempt at it is safe to start over.
+  const existing = await findImportByPeriod(allowed.year, allowed.month)
+  const importId =
+    existing?.id ??
+    (await createImport({
+      periodYear: allowed.year,
+      periodMonth: allowed.month,
+      filename: file.name,
+      uploadedBy: user.email,
+    }))
+  if (existing) {
+    await resetImport(existing.id, { filename: file.name, uploadedBy: user.email })
+    await clearRunsForImport(existing.id)
+  }
+  await saveImportPayload(importId, JSON.stringify(parsed))
 
   return c.html(
     <Layout title="Preview" user={{ name: user.name, email: user.email }}>
-      <ConvertPreview month={allowed} parsed={parsed} report={report} />
+      <ConvertPreview month={allowed} parsed={parsed} report={report} importId={importId} />
     </Layout>,
   )
 })

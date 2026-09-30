@@ -150,11 +150,14 @@ function UploadForm() {
  * explains why.
  */
 export function ConvertPage({
+  resume,
   month,
   companies,
   reason,
   uploadError,
 }: {
+  /** A month started but not fully posted, to carry on with. */
+  resume?: { id: number; label: string; status: string } | null
   month: Period | null
   companies: CompanyRunsView[]
   reason: string | null
@@ -166,6 +169,21 @@ export function ConvertPage({
       <a href="/" class="text-sm font-semibold text-brand hover:underline">
         ← Dashboard
       </a>
+
+      {resume ? (
+        <div class="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-brand/20 bg-brand/5 px-4 py-3 text-sm">
+          <span class="text-ink">
+            <span class="font-semibold">{resume.label}</span> was started but{" "}
+            {resume.status === "PARTIAL" ? "only partly posted" : "not posted yet"}.
+          </span>
+          <a
+            href={resume.status === "DRAFT" ? `/imports/${resume.id}/mapping` : `/imports/${resume.id}`}
+            class="font-semibold text-brand hover:underline"
+          >
+            Continue →
+          </a>
+        </div>
+      ) : null}
 
       {uploadError ? (
         <p class="mt-4 rounded-2xl border border-red-200/70 bg-red-50/80 px-4 py-3 text-sm font-medium text-red-700">
