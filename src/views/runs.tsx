@@ -1,13 +1,21 @@
 import { periodLabel } from "../lib/period"
-import type { AltomatePayrollRunStatus } from "../services/altomate.service"
+import type { AltomatePayrollRun, AltomatePayrollRunStatus } from "../services/altomate.service"
 import type { CompanyRunsView, RunsOverview } from "../services/runs.service"
 
+/** Amounts as the AltomateHR run list shows them: 2 decimals, no currency. */
 function money(n: number | null): string {
   if (n == null) return "—"
-  return `RM ${n.toLocaleString("en-MY", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`
+  return n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function shortDate(iso: string | null): string {
+  if (!iso) return "—"
+  return new Date(iso).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "Asia/Kuala_Lumpur",
+  })
 }
 
 const STATUS_META: Record<
@@ -137,113 +145,129 @@ function NextRunBanner({ overview }: { overview: RunsOverview }) {
   )
 }
 
-function CompanySection({ view }: { view: CompanyRunsView }) {
+function runPeriod(run: AltomatePayrollRun): string {
+  return periodLabel({ year: run.periodYear, month: run.periodMonth })
+}
+
+const CELL = "px-3 py-3"
+const NUM = `${CELL} text-right tabular-nums`
+const COLUMNS = 10
+
+function ChevronIcon() {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      class="h-4 w-4 transition-transform"
+    >
+      <path d="m9 18 6-6-6-6" />
+    </svg>
+  )
+}
+
+/** Period, status and figures of one run: the same cells for the latest run
+ * and for each earlier one, so they line up in one set of columns. */
+function RunCells({ run }: { run: AltomatePayrollRun }) {
+  return (
+    <>
+      <td class={`${CELL} whitespace-nowrap text-ink`}>{runPeriod(run)}</td>
+      <td class={CELL}>
+        <RunStatusBadge status={run.status} />
+      </td>
+      <td class={`${NUM} text-ink`}>{run.employeeCount ?? "—"}</td>
+      <td class={`${NUM} text-ink`}>{money(run.gross)}</td>
+      <td class={`${NUM} font-bold text-ink`}>{money(run.net)}</td>
+      <td class={`${NUM} text-ink`}>{money(run.costToEmployer)}</td>
+      <td class={`${CELL} whitespace-nowrap text-muted`}>{shortDate(run.generatedAt)}</td>
+    </>
+  )
+}
+
+/** What the company must do next: its next month, or the run to submit first. */
+function NextCell({ view }: { view: CompanyRunsView }) {
+  if (!view.connected || view.error) return <span class="text-muted">—</span>
+  if (view.ready && view.next) {
+    return <span class="whitespace-nowrap font-bold text-brand">{periodLabel(view.next)}</span>
+  }
+  return (
+    <span class="whitespace-nowrap font-bold text-amber-700">
+      Submit {view.latest ? periodLabel(view.latest) : "latest run"}
+    </span>
+  )
+}
+
+/**
+ * One row per company with its latest run. Earlier runs are hidden rows in
+ * the same columns, opened with the chevron.
+ */
+function CompanyRows({ view }: { view: CompanyRunsView }) {
   const { company, connected, runs, error } = view
+  const latest = connected && !error ? runs[0] : undefined
+  const earlier = connected && !error ? runs.slice(1) : []
+  const group = `runs-${company.altomate_org_id}`
 
   return (
-    <div class="glass rounded-3xl p-5">
-      <div class="flex flex-wrap items-start justify-between gap-3">
-        <div class="min-w-0">
+    <>
+      <tr class="border-t border-slate-200/70 align-middle">
+        <td class={`${CELL} min-w-[13rem]`}>
           <div class="flex items-center gap-2">
-            <h3 class="truncate text-base font-bold text-ink">{company.name}</h3>
+            <span class="font-semibold text-ink">{company.name}</span>
             {company.code ? (
               <span class="rounded-md bg-brand/10 px-1.5 py-0.5 text-[11px] font-bold uppercase tracking-wide text-brand">
                 {company.code}
               </span>
             ) : null}
           </div>
-          <p class="mt-0.5 text-xs text-muted">Org {company.altomate_org_id}</p>
-        </div>
-
-        {connected && !error && view.ready && view.next ? (
-          <div class="text-right">
-            <p class="text-[11px] font-semibold uppercase tracking-wide text-muted">
-              Next to run
-            </p>
-            <p class="text-sm font-bold text-brand">{periodLabel(view.next)}</p>
-          </div>
-        ) : connected && !error && !view.ready ? (
-          <div class="text-right">
-            <p class="text-[11px] font-semibold uppercase tracking-wide text-amber-600">
-              Waiting
-            </p>
-            <p class="text-sm font-bold text-amber-700">
-              Submit {view.latest ? periodLabel(view.latest) : "latest run"}
-            </p>
-          </div>
-        ) : null}
-      </div>
-
-      {!connected ? (
-        <p class="mt-4 rounded-2xl border border-amber-200/60 bg-amber-50/70 px-4 py-3 text-sm text-amber-700">
-          Not connected yet — add this company&apos;s token on the{" "}
-          <a href="/companies" class="font-semibold underline">
-            Companies
-          </a>{" "}
-          page to load its runs.
-        </p>
-      ) : error ? (
-        <p class="mt-4 rounded-2xl border border-red-200/60 bg-red-50/70 px-4 py-3 text-sm text-red-700">
-          {error}
-        </p>
-      ) : (
-        <>
-          {!view.ready && view.blockedReason ? (
-            <p class="mt-4 rounded-2xl border border-amber-200/60 bg-amber-50/70 px-4 py-3 text-sm text-amber-700">
-              {view.blockedReason}
-            </p>
-          ) : null}
-
-          {runs.length === 0 ? (
-            <p class="mt-4 rounded-2xl border border-white/60 bg-white/40 px-4 py-3 text-sm text-muted">
-              No payroll runs yet in AltomateHR.{" "}
-              {view.next ? periodLabel(view.next) : "The current month"} will be the
-              first.
-            </p>
-          ) : (
-            <div class="mt-4 overflow-hidden rounded-2xl border border-white/60">
-              <div class="overflow-x-auto">
-                <table class="w-full text-sm">
-                  <thead class="bg-white/40 text-left text-xs font-semibold uppercase tracking-wide text-muted">
-                    <tr>
-                      <th class="px-4 py-2.5">Period</th>
-                      <th class="px-4 py-2.5">Status</th>
-                      <th class="px-4 py-2.5 text-right">Gross</th>
-                      <th class="px-4 py-2.5 text-right">Net</th>
-                      <th class="px-4 py-2.5 text-right">Employees</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {runs.map((run) => (
-                      <tr class="border-t border-white/50">
-                        <td class="px-4 py-2.5 font-semibold text-ink">
-                          {periodLabel({
-                            year: run.periodYear,
-                            month: run.periodMonth,
-                          })}
-                        </td>
-                        <td class="px-4 py-2.5">
-                          <RunStatusBadge status={run.status} />
-                        </td>
-                        <td class="px-4 py-2.5 text-right text-muted">
-                          {money(run.gross)}
-                        </td>
-                        <td class="px-4 py-2.5 text-right text-muted">
-                          {money(run.net)}
-                        </td>
-                        <td class="px-4 py-2.5 text-right text-muted">
-                          {run.employeeCount ?? "—"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+          {!connected ? (
+            <div class="text-xs font-medium text-amber-700">
+              Not connected ·{" "}
+              <a href="/companies" class="font-semibold underline">
+                add token
+              </a>
             </div>
-          )}
-        </>
-      )}
-    </div>
+          ) : error ? (
+            <div class="text-xs font-medium text-red-700">{error}</div>
+          ) : !view.ready && view.blockedReason ? (
+            <div class="text-xs text-amber-700">{view.blockedReason}</div>
+          ) : null}
+        </td>
+        {latest ? (
+          <RunCells run={latest} />
+        ) : (
+          <td colspan={7} class={`${CELL} text-muted`}>
+            {connected && !error ? "No payroll runs yet" : "—"}
+          </td>
+        )}
+        <td class={CELL}>
+          <NextCell view={view} />
+        </td>
+        <td class={`${CELL} w-10 text-right`}>
+          {earlier.length > 0 ? (
+            <button
+              type="button"
+              title={`${earlier.length} earlier run${earlier.length === 1 ? "" : "s"}`}
+              aria-expanded="false"
+              class="rounded-full p-1 text-muted hover:bg-white hover:text-ink"
+              onclick={`for (const r of document.querySelectorAll('[data-group="${group}"]')) r.classList.toggle('hidden'); this.setAttribute('aria-expanded', this.getAttribute('aria-expanded') !== 'true'); this.querySelector('svg').classList.toggle('rotate-90')`}
+            >
+              <ChevronIcon />
+            </button>
+          ) : null}
+        </td>
+      </tr>
+      {earlier.map((run) => (
+        <tr data-group={group} class="hidden border-t border-slate-100 bg-white/30 text-[13px]">
+          <td class={`${CELL} text-right text-xs text-muted`}>earlier</td>
+          <RunCells run={run} />
+          <td colspan={COLUMNS - 8} />
+        </tr>
+      ))}
+    </>
   )
 }
 
@@ -262,11 +286,33 @@ export function RunsPage({ overview }: { overview: RunsOverview }) {
         <NextRunBanner overview={overview} />
       </div>
 
-      <div class="space-y-4">
-        {overview.companies.map((view) => (
-          <CompanySection view={view} />
-        ))}
-      </div>
+      {overview.companies.length > 0 ? (
+        <div class="glass overflow-hidden rounded-3xl p-2">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead class="whitespace-nowrap text-left text-xs font-semibold uppercase tracking-wide text-muted">
+                <tr>
+                  <th class={CELL}>Company</th>
+                  <th class={CELL}>Period</th>
+                  <th class={CELL}>Status</th>
+                  <th class={`${CELL} text-right`}>Staff</th>
+                  <th class={`${CELL} text-right`}>Gross</th>
+                  <th class={`${CELL} text-right`}>Net pay</th>
+                  <th class={`${CELL} text-right`}>Cost to employer</th>
+                  <th class={CELL}>Generated</th>
+                  <th class={CELL}>Next to run</th>
+                  <th class={CELL}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {overview.companies.map((view) => (
+                  <CompanyRows view={view} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

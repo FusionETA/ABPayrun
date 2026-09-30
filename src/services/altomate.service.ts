@@ -178,6 +178,8 @@ export type AltomatePayrollRun = {
   gross: number | null
   net: number | null
   employeeCount: number | null
+  costToEmployer: number | null
+  generatedAt: string | null
   submittedAt: string | null
   createdAt: string
 }
@@ -197,6 +199,8 @@ export async function listPayrollRuns(token: string): Promise<AltomatePayrollRun
       totalGross?: number | null
       totalNet?: number | null
       employeeCount?: number | null
+      totalCostToEmployer?: number | null
+      generatedAt?: string | null
       submittedAt?: string | null
       createdAt: string
     }>
@@ -209,6 +213,8 @@ export async function listPayrollRuns(token: string): Promise<AltomatePayrollRun
     gross: r.totalGross ?? null,
     net: r.totalNet ?? null,
     employeeCount: r.employeeCount ?? null,
+    costToEmployer: r.totalCostToEmployer ?? null,
+    generatedAt: r.generatedAt ?? null,
     submittedAt: r.submittedAt ?? null,
     createdAt: r.createdAt,
   }))

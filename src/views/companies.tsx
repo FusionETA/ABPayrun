@@ -36,19 +36,32 @@ function StatusBadge({ connected }: { connected: boolean }) {
   )
 }
 
-function RosterCell({ roster }: { roster: CompanyRoster | null }) {
-  if (!roster) return <span class="text-muted">—</span>
+/** Employees, projects and sync time as three cells, so the numbers line up
+ * down the table; a sync error spans all three. */
+function RosterCells({ roster }: { roster: CompanyRoster | null }) {
+  const cell = "px-4 py-2.5 text-right tabular-nums"
+  if (!roster) {
+    return (
+      <>
+        <td class={`${cell} text-muted`}>—</td>
+        <td class={`${cell} text-muted`}>—</td>
+        <td class={`${cell} text-muted`}>—</td>
+      </>
+    )
+  }
   if (roster.error) {
-    return <span class="text-xs font-medium text-red-700">{roster.error}</span>
+    return (
+      <td colspan={3} class="px-4 py-2.5 text-xs font-medium text-red-700">
+        {roster.error}
+      </td>
+    )
   }
   return (
-    <span class="whitespace-nowrap text-muted">
-      <span class="font-semibold text-ink">{roster.employees.length}</span> employees ·{" "}
-      <span class="font-semibold text-ink">{roster.projects.length}</span> projects
-      {roster.syncedAt ? (
-        <span class="block text-xs">synced {roster.syncedAt.slice(11, 16)}</span>
-      ) : null}
-    </span>
+    <>
+      <td class={`${cell} font-semibold text-ink`}>{roster.employees.length}</td>
+      <td class={`${cell} font-semibold text-ink`}>{roster.projects.length}</td>
+      <td class={`${cell} text-muted`}>{roster.syncedAt ? roster.syncedAt.slice(11, 16) : "—"}</td>
+    </>
   )
 }
 
@@ -112,9 +125,7 @@ function CompanyRow({ company: c, roster }: CompanyWithRoster) {
           </button>
         </form>
       </td>
-      <td class="px-4 py-2.5">
-        <RosterCell roster={connected ? roster : null} />
-      </td>
+      <RosterCells roster={connected ? roster : null} />
       <td class="px-4 py-2.5 text-right">
         {connected ? (
           <a
@@ -168,7 +179,9 @@ export function CompaniesPage({
                   <th class="px-4 py-2.5">Status</th>
                   <th class="px-4 py-2.5">Timesheet code</th>
                   <th class="px-4 py-2.5">API token</th>
-                  <th class="px-4 py-2.5">Roster</th>
+                  <th class="px-4 py-2.5 text-right">Employees</th>
+                  <th class="px-4 py-2.5 text-right">Projects</th>
+                  <th class="px-4 py-2.5 text-right">Synced</th>
                   <th class="px-4 py-2.5"></th>
                 </tr>
               </thead>
