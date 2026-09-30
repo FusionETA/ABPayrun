@@ -92,26 +92,49 @@ export function ConvertPage({
             </p>
           </div>
 
-          <div class="glass mt-4 rounded-3xl p-6">
-            <p class="text-xs font-semibold uppercase tracking-wide text-muted">
+          <div class="glass mt-4 overflow-hidden rounded-3xl p-2">
+            <p class="px-3 pt-3 text-xs font-semibold uppercase tracking-wide text-muted">
               Companies in this run
             </p>
-            <ul class="mt-3 space-y-2">
-              {companies.map((v) => (
-                <li class="flex items-center justify-between rounded-2xl border border-white/60 bg-white/40 px-4 py-2.5 text-sm">
-                  <span class="font-semibold text-ink">{v.company.name}</span>
-                  <span class="text-muted">
-                    {v.company.code ? (
-                      <span class="rounded-md bg-brand/10 px-1.5 py-0.5 text-[11px] font-bold uppercase text-brand">
-                        {v.company.code}
-                      </span>
-                    ) : (
-                      <span class="text-amber-600">no timesheet code set</span>
-                    )}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead class="whitespace-nowrap text-left text-xs font-semibold uppercase tracking-wide text-muted">
+                  <tr>
+                    <th class="px-3 py-3">Company</th>
+                    <th class="px-3 py-3">Timesheet code</th>
+                    <th class="px-3 py-3">Last run</th>
+                    <th class="px-3 py-3 text-right">Staff</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {companies.map((v) => (
+                    <tr class="border-t border-slate-200/70">
+                      <td class="px-3 py-3 font-semibold text-ink">{v.company.name}</td>
+                      <td class="px-3 py-3">
+                        {v.company.code ? (
+                          <span class="rounded-md bg-brand/10 px-1.5 py-0.5 text-[11px] font-bold uppercase text-brand">
+                            {v.company.code}
+                          </span>
+                        ) : (
+                          <span class="text-xs font-medium text-amber-700">
+                            Not set ·{" "}
+                            <a href="/companies" class="font-semibold underline">
+                              set code
+                            </a>
+                          </span>
+                        )}
+                      </td>
+                      <td class="whitespace-nowrap px-3 py-3 text-muted">
+                        {v.latest ? periodLabel(v.latest) : "No runs yet"}
+                      </td>
+                      <td class="px-3 py-3 text-right tabular-nums text-ink">
+                        {v.runs[0]?.employeeCount ?? "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <form
