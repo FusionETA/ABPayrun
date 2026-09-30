@@ -77,8 +77,9 @@ export async function setCompanyCode(input: {
  *
  * A token is user-pasted and unrecoverable, so a sync must never delete it
  * just because a transient/partial AltomateHR response didn't list the org
- * (which is how the whole roster got wiped once). Connected companies are
- * only ever removed by the user replacing/clearing the token themselves.
+ * (which is how the whole roster got wiped once). A connected company is
+ * removed only once its own token confirms it is gone — see
+ * `removeDeletedConnectedCompanies` in company.service.
  * No-op on an empty list.
  */
 export async function deleteCompaniesNotIn(orgIds: string[]): Promise<void> {
@@ -97,4 +98,34 @@ export async function deleteCompaniesNotIn(orgIds: string[]): Promise<void> {
   if (affected > 0) {
     console.warn(`[abpay] reconcile pruned ${affected} unconnected company row(s).`)
   }
+}
+
+/**
+ * Connected companies (with a token) whose org id is NOT in the given list —
+ * the candidates `deleteCompaniesNotIn` deliberately leaves alone. The caller
+ * checks each one with its own token before removing it. Empty on an empty list.
+ */
+export async function listConnectedCompaniesNotIn(orgIds: string[]): Promise<CompanyRecord[]> {
+  if (orgIds.length === 0) return []
+  const names = orgIds.map((_, i) => `:o${i}`)
+  const params: Record<string, string> = {}
+  orgIds.forEach((id, i) => {
+    params[`o${i}`] = id
+  })
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT * FROM company
+       WHERE wp_token_enc IS NOT NULL AND altomate_org_id NOT IN (${names.join(",")})`,
+    params,
+  )
+  return rows as CompanyRecord[]
+}
+
+/**
+ * Remove one company and its cached AltomateHR reads. Imports, posted runs and
+ * staff mappings are keyed by company code, not by this row, so a company's
+ * history is kept.
+ */
+export async function deleteCompany(orgId: string): Promise<void> {
+  await pool.query("DELETE FROM altomate_cache WHERE altomate_org_id = :orgId", { orgId })
+  await pool.query("DELETE FROM company WHERE altomate_org_id = :orgId", { orgId })
 }

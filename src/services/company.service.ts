@@ -4,8 +4,8 @@ import { whoami, type AltomateOrg } from "./altomate.service"
 
 /**
  * Reconcile ABPay's company list to exactly the owner's AltomateHR
- * companies (called at login): upsert each org, then drop any stale rows
- * no longer in the owner's list. Guarded on a non-empty list so a
+ * companies (called at login and on Refresh): upsert each org, then drop any
+ * stale rows no longer in the owner's list. Guarded on a non-empty list so a
  * transient empty response never wipes connected companies + tokens.
  */
 export async function syncOwnerCompanies(orgs: AltomateOrg[]): Promise<void> {
@@ -13,7 +13,42 @@ export async function syncOwnerCompanies(orgs: AltomateOrg[]): Promise<void> {
     await companyRepo.upsertCompany({ altomateOrgId: o.id, name: o.name })
   }
   if (orgs.length > 0) {
-    await companyRepo.deleteCompaniesNotIn(orgs.map((o) => o.id))
+    const ids = orgs.map((o) => o.id)
+    await companyRepo.deleteCompaniesNotIn(ids)
+    await removeDeletedConnectedCompanies(ids)
+  }
+}
+
+/**
+ * A connected company missing from the owner's list is NOT removed on that
+ * alone — a partial AltomateHR response once wiped every company and its
+ * unrecoverable token. Instead its own token is asked: AltomateHR rejects the
+ * key of a company that no longer exists (401/403), and only then is the row
+ * removed. A key that still works means the list was just incomplete, and an
+ * AltomateHR that can't be reached decides nothing — both keep the company
+ * until the next Refresh.
+ */
+async function removeDeletedConnectedCompanies(listedOrgIds: string[]): Promise<void> {
+  for (const company of await companyRepo.listConnectedCompaniesNotIn(listedOrgIds)) {
+    let token: string
+    try {
+      token = decryptSecret(company.wp_token_enc!)
+    } catch {
+      continue // can't read the token, so can't check — keep it
+    }
+
+    let info
+    try {
+      info = await whoami(token)
+    } catch (err) {
+      console.warn(`[abpay] couldn't check "${company.name}" with AltomateHR; kept it.`, err)
+      continue
+    }
+
+    if (info === null) {
+      await companyRepo.deleteCompany(company.altomate_org_id)
+      console.warn(`[abpay] removed "${company.name}": no longer in AltomateHR and its token is rejected.`)
+    }
   }
 }
 
