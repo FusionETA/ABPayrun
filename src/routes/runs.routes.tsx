@@ -96,7 +96,11 @@ runsRoutes.get("/convert", requireAuth, async (c) => {
       title="Convert"
       user={{ name: user.name, email: user.email }}
       flash={
-        c.req.query("err") ? { type: "err", msg: c.req.query("err")! } : null
+        c.req.query("err")
+          ? { type: "err", msg: c.req.query("err")! }
+          : c.req.query("ok")
+            ? { type: "ok", msg: c.req.query("ok")! }
+            : null
       }
     >
       <ConvertPage

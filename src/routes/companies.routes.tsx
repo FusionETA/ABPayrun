@@ -124,5 +124,9 @@ companiesRoutes.post("/companies/:orgId/code", requireAuth, async (c) => {
   const form = await c.req.parseBody()
   const code = String(form.code ?? "").trim().toUpperCase()
   await setCompanyCode({ altomateOrgId: orgId, code: code || null })
-  return c.redirect("/companies?ok=" + encodeURIComponent("Timesheet code saved."))
+  // The Convert page's "Needs attention" saves here too and wants to come
+  // back. Only a same-site path is honoured, never a full URL.
+  const next = String(form.next ?? "")
+  const back = next === "/convert" ? "/convert" : "/companies"
+  return c.redirect(`${back}?ok=` + encodeURIComponent("Timesheet code saved."))
 })

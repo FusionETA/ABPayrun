@@ -19,58 +19,69 @@ function LockIcon() {
   )
 }
 
-/** The companies this run covers, with the timesheet code each is split by. */
-function CompaniesTable({ companies }: { companies: CompanyRunsView[] }) {
-  const missing = companies.filter((v) => !v.company.code).length
+function AlertIcon() {
   return (
-    <div class="glass overflow-hidden rounded-3xl p-2">
-      <p class="px-3 pt-3 text-xs font-semibold uppercase tracking-wide text-muted">
-        Companies in this run
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      class="h-4 w-4"
+    >
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </svg>
+  )
+}
+
+/**
+ * Only the companies that stop an upload from working — ones without a
+ * timesheet code, whose rows can't be matched. Each can be fixed right here.
+ * When nothing is missing this isn't shown at all.
+ */
+function NeedsAttention({ missing }: { missing: CompanyRunsView[] }) {
+  return (
+    <div class="rounded-3xl border border-amber-200/70 bg-amber-50/80 p-6">
+      <h2 class="flex items-center gap-2 text-base font-bold text-amber-800">
+        <AlertIcon /> Needs attention
+      </h2>
+      <p class="mt-1 text-sm text-amber-700">
+        {missing.length === 1 ? "This company has" : `These ${missing.length} companies have`} no
+        timesheet code, so {missing.length === 1 ? "its" : "their"} rows in the timesheet can&apos;t
+        be matched. Enter the code used in the timesheet&apos;s Company column.
       </p>
-      {missing > 0 ? (
-        <p class="mx-3 mt-2 rounded-2xl border border-amber-200/70 bg-amber-50/80 px-4 py-2.5 text-sm text-amber-800">
-          {missing === companies.length ? "No company has" : `${missing} of ${companies.length} companies ${missing === 1 ? "has" : "have"} no`}{" "}
-          {missing === companies.length ? "a timesheet code yet" : "timesheet code"}, so their
-          timesheet rows can&apos;t be matched. Set them on the{" "}
-          <a href="/companies" class="font-semibold underline">
-            Companies
-          </a>{" "}
-          page first.
-        </p>
-      ) : null}
-      <div class="overflow-x-auto">
+      <div class="mt-4 overflow-hidden rounded-2xl border border-amber-200/70 bg-white/60">
         <table class="w-full text-sm">
-          <thead class="whitespace-nowrap text-left text-xs font-semibold uppercase tracking-wide text-muted">
-            <tr>
-              <th class="px-3 py-3">Company</th>
-              <th class="px-3 py-3">Timesheet code</th>
-              <th class="px-3 py-3">Last run</th>
-              <th class="px-3 py-3 text-right">Staff</th>
-            </tr>
-          </thead>
           <tbody>
-            {companies.map((v) => (
-              <tr class="border-t border-slate-200/70">
-                <td class="px-3 py-3 font-semibold text-ink">{v.company.name}</td>
-                <td class="px-3 py-3">
-                  {v.company.code ? (
-                    <span class="rounded-md bg-brand/10 px-1.5 py-0.5 text-[11px] font-bold uppercase text-brand">
-                      {v.company.code}
-                    </span>
-                  ) : (
-                    <span class="text-xs font-medium text-amber-700">
-                      Not set ·{" "}
-                      <a href="/companies" class="font-semibold underline">
-                        set code
-                      </a>
-                    </span>
-                  )}
-                </td>
-                <td class="whitespace-nowrap px-3 py-3 text-muted">
-                  {v.latest ? periodLabel(v.latest) : "No runs yet"}
-                </td>
-                <td class="px-3 py-3 text-right tabular-nums text-ink">
-                  {v.runs[0]?.employeeCount ?? "—"}
+            {missing.map((v, i) => (
+              <tr class={i > 0 ? "border-t border-amber-100" : ""}>
+                <td class="px-4 py-2.5 font-semibold text-ink">{v.company.name}</td>
+                <td class="px-4 py-2.5 text-right">
+                  <form
+                    method="post"
+                    action={`/companies/${v.company.altomate_org_id}/code`}
+                    class="inline-flex items-center gap-1.5"
+                  >
+                    <input type="hidden" name="next" value="/convert" />
+                    <input
+                      name="code"
+                      placeholder="ABM"
+                      maxlength={20}
+                      required
+                      aria-label={`Timesheet code for ${v.company.name}`}
+                      class="w-24 rounded-xl border border-white/70 bg-white px-2.5 py-1.5 text-sm uppercase text-ink outline-none transition focus:border-brand focus:ring-4 focus:ring-brand/15"
+                    />
+                    <button
+                      type="submit"
+                      class="press rounded-xl bg-brand hover:bg-[#3f1670] px-3 py-1.5 text-xs font-semibold text-white"
+                    >
+                      Save
+                    </button>
+                  </form>
                 </td>
               </tr>
             ))}
@@ -81,7 +92,7 @@ function CompaniesTable({ companies }: { companies: CompanyRunsView[] }) {
   )
 }
 
-function UploadForm() {
+function UploadForm({ codes }: { codes: string[] }) {
   return (
     <form
       method="post"
@@ -110,6 +121,11 @@ function UploadForm() {
         One .xlsx with all companies mixed — ABPay splits it by company and
         validates every employee against AltomateHR before anything runs.
       </p>
+      {codes.length ? (
+        <p class="mx-auto mt-2 max-w-lg text-xs text-muted">
+          Split by the Company column: {codes.join(" · ")}
+        </p>
+      ) : null}
       <div class="mt-6 flex flex-col items-center gap-4">
         <input
           type="file"
@@ -163,7 +179,8 @@ export function ConvertPage({
   reason: string | null
   uploadError?: string | null
 }) {
-  const missingCode = companies.some((v) => !v.company.code)
+  const missing = companies.filter((v) => !v.company.code)
+  const codes = companies.flatMap((v) => (v.company.code ? [v.company.code] : [])).sort()
   return (
     <div>
       <a href="/" class="text-sm font-semibold text-brand hover:underline">
@@ -233,20 +250,11 @@ export function ConvertPage({
             </p>
           </div>
 
-          {/* Nothing to fix: the upload comes first. A company without a
-              timesheet code can't be matched, so then the table leads. */}
+          {/* Only what needs fixing is shown; a company with its code set
+              has nothing to say here. */}
           <div class="mt-4 space-y-4">
-            {missingCode ? (
-              <>
-                <CompaniesTable companies={companies} />
-                <UploadForm />
-              </>
-            ) : (
-              <>
-                <UploadForm />
-                <CompaniesTable companies={companies} />
-              </>
-            )}
+            {missing.length > 0 ? <NeedsAttention missing={missing} /> : null}
+            <UploadForm codes={codes} />
           </div>
         </>
       )}

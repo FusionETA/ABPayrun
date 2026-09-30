@@ -188,6 +188,22 @@ function RunCells({ run }: { run: AltomatePayrollRun }) {
   )
 }
 
+/** The same seven cells as `RunCells` for a company with no run, so every
+ * column keeps its place instead of one message spanning them all. */
+function EmptyRunCells({ label }: { label: string }) {
+  return (
+    <>
+      <td class={`${CELL} whitespace-nowrap text-muted`}>{label}</td>
+      <td class={`${CELL} text-muted`}>—</td>
+      <td class={`${NUM} text-muted`}>—</td>
+      <td class={`${NUM} text-muted`}>—</td>
+      <td class={`${NUM} text-muted`}>—</td>
+      <td class={`${NUM} text-muted`}>—</td>
+      <td class={`${CELL} text-muted`}>—</td>
+    </>
+  )
+}
+
 /** What the company must do next: its next month, or the run to submit first. */
 function NextCell({ view }: { view: CompanyRunsView }) {
   if (!view.connected || view.error) return <span class="text-muted">—</span>
@@ -239,9 +255,7 @@ function CompanyRows({ view }: { view: CompanyRunsView }) {
         {latest ? (
           <RunCells run={latest} />
         ) : (
-          <td colspan={7} class={`${CELL} text-muted`}>
-            {connected && !error ? "No payroll runs yet" : "—"}
-          </td>
+          <EmptyRunCells label={connected && !error ? "No runs yet" : "—"} />
         )}
         <td class={CELL}>
           <NextCell view={view} />
