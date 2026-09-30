@@ -24,109 +24,108 @@ function CheckIcon() {
   )
 }
 
-function CompanyRosterSummary({
-  company: c,
-  roster,
-}: {
-  company: CompanyRecord
-  roster: CompanyRoster
-}) {
-  return (
-    <div class="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-white/50 pt-4">
-      {roster.error ? (
-        <span class="text-sm font-medium text-red-700">{roster.error}</span>
-      ) : (
-        <span class="text-sm text-muted">
-          <span class="font-semibold text-ink">{roster.employees.length}</span>{" "}
-          employees ·{" "}
-          <span class="font-semibold text-ink">{roster.projects.length}</span>{" "}
-          projects
-          {roster.syncedAt ? ` · synced ${roster.syncedAt.slice(11, 16)}` : ""}
-        </span>
-      )}
-      <a
-        href={`/companies/${c.altomate_org_id}`}
-        class="text-sm font-semibold text-brand hover:underline"
-      >
-        View details →
-      </a>
-    </div>
+function StatusBadge({ connected }: { connected: boolean }) {
+  return connected ? (
+    <span class="inline-flex items-center gap-1 whitespace-nowrap rounded-full bg-emerald-100/70 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
+      <CheckIcon /> Connected
+    </span>
+  ) : (
+    <span class="inline-flex items-center whitespace-nowrap rounded-full bg-amber-100/70 px-2.5 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-inset ring-amber-200">
+      Needs token
+    </span>
   )
 }
 
-function CompanyCard({ company: c, roster }: CompanyWithRoster) {
+function RosterCell({ roster }: { roster: CompanyRoster | null }) {
+  if (!roster) return <span class="text-muted">—</span>
+  if (roster.error) {
+    return <span class="text-xs font-medium text-red-700">{roster.error}</span>
+  }
+  return (
+    <span class="whitespace-nowrap text-muted">
+      <span class="font-semibold text-ink">{roster.employees.length}</span> employees ·{" "}
+      <span class="font-semibold text-ink">{roster.projects.length}</span> projects
+      {roster.syncedAt ? (
+        <span class="block text-xs">synced {roster.syncedAt.slice(11, 16)}</span>
+      ) : null}
+    </span>
+  )
+}
+
+/** One company per row, so a long list stays scannable. */
+function CompanyRow({ company: c, roster }: CompanyWithRoster) {
   const connected = !!c.wp_token_enc
   return (
-    <div class="glass lift rounded-3xl p-5">
-      <div class="flex flex-wrap items-start justify-between gap-4">
-        <div class="min-w-0">
-          <div class="flex items-center gap-2">
-            <h3 class="truncate text-base font-bold text-ink">{c.name}</h3>
-            {connected ? (
-              <span class="inline-flex items-center gap-1 rounded-full bg-emerald-100/70 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
-                <CheckIcon /> Connected
-              </span>
-            ) : (
-              <span class="inline-flex items-center rounded-full bg-amber-100/70 px-2.5 py-0.5 text-xs font-semibold text-amber-700 ring-1 ring-inset ring-amber-200">
-                Needs token
-              </span>
-            )}
-          </div>
-          <p class="mt-0.5 text-xs text-muted">
-            Org {c.altomate_org_id}
-            {c.wp_scopes ? ` · ${c.wp_scopes.length} scopes` : ""}
-          </p>
+    <tr class="border-t border-white/50 align-middle">
+      <td class="min-w-[14rem] px-4 py-2.5">
+        <div class="font-semibold text-ink">{c.name}</div>
+        {/* The full org id is long; its first block is enough to tell rows apart. */}
+        <div class="text-xs text-muted" title={c.altomate_org_id}>
+          Org {c.altomate_org_id.split("-")[0]}
+          {c.wp_scopes ? ` · ${c.wp_scopes.length} scopes` : ""}
         </div>
-
+      </td>
+      <td class="px-4 py-2.5">
+        <StatusBadge connected={connected} />
+      </td>
+      <td class="px-4 py-2.5">
         <form
           method="post"
           action={`/companies/${c.altomate_org_id}/code`}
-          class="flex items-center gap-2"
+          class="flex items-center gap-1.5"
         >
-          <label class="text-xs font-semibold text-muted" for={`code-${c.id}`}>
-            Timesheet code
-          </label>
           <input
-            id={`code-${c.id}`}
             name="code"
             value={c.code ?? ""}
             placeholder="ABM"
             maxlength={20}
-            class="w-24 rounded-xl border border-white/70 bg-white/60 px-3 py-1.5 text-sm uppercase text-ink outline-none transition focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/15"
+            aria-label={`Timesheet code for ${c.name}`}
+            class="w-20 rounded-xl border border-white/70 bg-white/60 px-2.5 py-1.5 text-sm uppercase text-ink outline-none transition focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/15"
           />
           <button
             type="submit"
-            class="press rounded-xl border border-white/70 bg-white/50 px-3 py-1.5 text-sm font-medium text-ink hover:bg-white"
+            class="press rounded-xl border border-white/70 bg-white/50 px-2.5 py-1.5 text-xs font-medium text-ink hover:bg-white"
           >
             Save
           </button>
         </form>
-      </div>
-
-      {connected && roster ? (
-        <CompanyRosterSummary company={c} roster={roster} />
-      ) : null}
-
-      <form
-        method="post"
-        action={`/companies/${c.altomate_org_id}/token`}
-        class="mt-4 flex flex-wrap items-center gap-2 border-t border-white/50 pt-4"
-      >
-        <input
-          name="token"
-          type="password"
-          autocomplete="off"
-          placeholder={connected ? "•••••••• — paste a new token to replace" : "Paste this company's wp_live_ token"}
-          class="min-w-0 flex-1 rounded-xl border border-white/70 bg-white/60 px-3.5 py-2 text-sm text-ink outline-none transition placeholder:text-muted/50 focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/15"
-        />
-        <button
-          type="submit"
-          class="press rounded-xl bg-brand hover:bg-[#3f1670] px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-brand/30"
+      </td>
+      <td class="px-4 py-2.5">
+        <form
+          method="post"
+          action={`/companies/${c.altomate_org_id}/token`}
+          class="flex items-center gap-1.5"
         >
-          {connected ? "Replace" : "Connect"}
-        </button>
-      </form>
-    </div>
+          <input
+            name="token"
+            type="password"
+            autocomplete="off"
+            aria-label={`API token for ${c.name}`}
+            placeholder={connected ? "•••••••• replace token" : "Paste wp_live_ token"}
+            class="w-48 min-w-0 rounded-xl border border-white/70 bg-white/60 px-3 py-1.5 text-sm text-ink outline-none transition placeholder:text-muted/50 focus:border-brand focus:bg-white focus:ring-4 focus:ring-brand/15"
+          />
+          <button
+            type="submit"
+            class="press rounded-xl bg-brand hover:bg-[#3f1670] px-3 py-1.5 text-xs font-semibold text-white shadow-lg shadow-brand/30"
+          >
+            {connected ? "Replace" : "Connect"}
+          </button>
+        </form>
+      </td>
+      <td class="px-4 py-2.5">
+        <RosterCell roster={connected ? roster : null} />
+      </td>
+      <td class="px-4 py-2.5 text-right">
+        {connected ? (
+          <a
+            href={`/companies/${c.altomate_org_id}`}
+            class="whitespace-nowrap text-sm font-semibold text-brand hover:underline"
+          >
+            Details →
+          </a>
+        ) : null}
+      </td>
+    </tr>
   )
 }
 
@@ -160,10 +159,26 @@ export function CompaniesPage({
           your AltomateHR owner account.
         </div>
       ) : (
-        <div class="space-y-4">
-          {companies.map((c) => (
-            <CompanyCard company={c.company} roster={c.roster} />
-          ))}
+        <div class="glass overflow-hidden rounded-3xl">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead class="bg-white/40 text-left text-xs font-semibold uppercase tracking-wide text-muted">
+                <tr>
+                  <th class="px-4 py-2.5">Company</th>
+                  <th class="px-4 py-2.5">Status</th>
+                  <th class="px-4 py-2.5">Timesheet code</th>
+                  <th class="px-4 py-2.5">API token</th>
+                  <th class="px-4 py-2.5">Roster</th>
+                  <th class="px-4 py-2.5"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {companies.map((c) => (
+                  <CompanyRow company={c.company} roster={c.roster} />
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
