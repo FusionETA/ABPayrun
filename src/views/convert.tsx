@@ -19,6 +19,128 @@ function LockIcon() {
   )
 }
 
+/** The companies this run covers, with the timesheet code each is split by. */
+function CompaniesTable({ companies }: { companies: CompanyRunsView[] }) {
+  const missing = companies.filter((v) => !v.company.code).length
+  return (
+    <div class="glass overflow-hidden rounded-3xl p-2">
+      <p class="px-3 pt-3 text-xs font-semibold uppercase tracking-wide text-muted">
+        Companies in this run
+      </p>
+      {missing > 0 ? (
+        <p class="mx-3 mt-2 rounded-2xl border border-amber-200/70 bg-amber-50/80 px-4 py-2.5 text-sm text-amber-800">
+          {missing === companies.length ? "No company has" : `${missing} of ${companies.length} companies ${missing === 1 ? "has" : "have"} no`}{" "}
+          {missing === companies.length ? "a timesheet code yet" : "timesheet code"}, so their
+          timesheet rows can&apos;t be matched. Set them on the{" "}
+          <a href="/companies" class="font-semibold underline">
+            Companies
+          </a>{" "}
+          page first.
+        </p>
+      ) : null}
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead class="whitespace-nowrap text-left text-xs font-semibold uppercase tracking-wide text-muted">
+            <tr>
+              <th class="px-3 py-3">Company</th>
+              <th class="px-3 py-3">Timesheet code</th>
+              <th class="px-3 py-3">Last run</th>
+              <th class="px-3 py-3 text-right">Staff</th>
+            </tr>
+          </thead>
+          <tbody>
+            {companies.map((v) => (
+              <tr class="border-t border-slate-200/70">
+                <td class="px-3 py-3 font-semibold text-ink">{v.company.name}</td>
+                <td class="px-3 py-3">
+                  {v.company.code ? (
+                    <span class="rounded-md bg-brand/10 px-1.5 py-0.5 text-[11px] font-bold uppercase text-brand">
+                      {v.company.code}
+                    </span>
+                  ) : (
+                    <span class="text-xs font-medium text-amber-700">
+                      Not set ·{" "}
+                      <a href="/companies" class="font-semibold underline">
+                        set code
+                      </a>
+                    </span>
+                  )}
+                </td>
+                <td class="whitespace-nowrap px-3 py-3 text-muted">
+                  {v.latest ? periodLabel(v.latest) : "No runs yet"}
+                </td>
+                <td class="px-3 py-3 text-right tabular-nums text-ink">
+                  {v.runs[0]?.employeeCount ?? "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+function UploadForm() {
+  return (
+    <form
+      method="post"
+      action="/convert"
+      enctype="multipart/form-data"
+      class="rounded-3xl border-2 border-dashed border-brand/30 bg-white/40 p-10 text-center transition hover:border-brand/50"
+    >
+      <div class="mx-auto mb-4 inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-brand/10 text-brand">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          class="h-7 w-7"
+        >
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <path d="M17 8l-5-5-5 5" />
+          <path d="M12 3v12" />
+        </svg>
+      </div>
+      <h3 class="text-lg font-bold text-ink">Upload the timesheet</h3>
+      <p class="mx-auto mt-1.5 max-w-md text-sm text-muted">
+        One .xlsx with all companies mixed — ABPay splits it by company and
+        validates every employee against AltomateHR before anything runs.
+      </p>
+      <div class="mt-6 flex flex-col items-center gap-4">
+        <input
+          type="file"
+          name="timesheet"
+          accept=".xlsx,.xls,.csv"
+          required
+          class="block max-w-xs text-sm text-muted file:mr-3 file:cursor-pointer file:rounded-xl file:border-0 file:bg-brand/10 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-brand hover:file:bg-brand/15"
+        />
+        <button
+          type="submit"
+          class="press inline-flex items-center gap-2 rounded-2xl bg-brand hover:bg-[#3f1670] px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand/30"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            class="h-4 w-4"
+          >
+            <path d="M5 12h14M13 6l6 6-6 6" />
+          </svg>
+          Upload &amp; preview
+        </button>
+      </div>
+    </form>
+  )
+}
+
 /**
  * Convert flow entry point (upload a timesheet → split by company → post).
  * The period is computed server-side (the next month in sequence) and shown
@@ -38,6 +160,7 @@ export function ConvertPage({
   reason: string | null
   uploadError?: string | null
 }) {
+  const missingCode = companies.some((v) => !v.company.code)
   return (
     <div>
       <a href="/" class="text-sm font-semibold text-brand hover:underline">
@@ -92,106 +215,21 @@ export function ConvertPage({
             </p>
           </div>
 
-          <div class="glass mt-4 overflow-hidden rounded-3xl p-2">
-            <p class="px-3 pt-3 text-xs font-semibold uppercase tracking-wide text-muted">
-              Companies in this run
-            </p>
-            <div class="overflow-x-auto">
-              <table class="w-full text-sm">
-                <thead class="whitespace-nowrap text-left text-xs font-semibold uppercase tracking-wide text-muted">
-                  <tr>
-                    <th class="px-3 py-3">Company</th>
-                    <th class="px-3 py-3">Timesheet code</th>
-                    <th class="px-3 py-3">Last run</th>
-                    <th class="px-3 py-3 text-right">Staff</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {companies.map((v) => (
-                    <tr class="border-t border-slate-200/70">
-                      <td class="px-3 py-3 font-semibold text-ink">{v.company.name}</td>
-                      <td class="px-3 py-3">
-                        {v.company.code ? (
-                          <span class="rounded-md bg-brand/10 px-1.5 py-0.5 text-[11px] font-bold uppercase text-brand">
-                            {v.company.code}
-                          </span>
-                        ) : (
-                          <span class="text-xs font-medium text-amber-700">
-                            Not set ·{" "}
-                            <a href="/companies" class="font-semibold underline">
-                              set code
-                            </a>
-                          </span>
-                        )}
-                      </td>
-                      <td class="whitespace-nowrap px-3 py-3 text-muted">
-                        {v.latest ? periodLabel(v.latest) : "No runs yet"}
-                      </td>
-                      <td class="px-3 py-3 text-right tabular-nums text-ink">
-                        {v.runs[0]?.employeeCount ?? "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+          {/* Nothing to fix: the upload comes first. A company without a
+              timesheet code can't be matched, so then the table leads. */}
+          <div class="mt-4 space-y-4">
+            {missingCode ? (
+              <>
+                <CompaniesTable companies={companies} />
+                <UploadForm />
+              </>
+            ) : (
+              <>
+                <UploadForm />
+                <CompaniesTable companies={companies} />
+              </>
+            )}
           </div>
-
-          <form
-            method="post"
-            action="/convert"
-            enctype="multipart/form-data"
-            class="mt-4 rounded-3xl border-2 border-dashed border-brand/30 bg-white/40 p-10 text-center transition hover:border-brand/50"
-          >
-            <div class="mx-auto mb-4 inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-brand/10 text-brand">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="1.8"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                class="h-7 w-7"
-              >
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <path d="M17 8l-5-5-5 5" />
-                <path d="M12 3v12" />
-              </svg>
-            </div>
-            <h3 class="text-lg font-bold text-ink">Upload the timesheet</h3>
-            <p class="mx-auto mt-1.5 max-w-md text-sm text-muted">
-              One .xlsx with all companies mixed — ABPay splits it by company and
-              validates every employee against AltomateHR before anything runs.
-            </p>
-            <div class="mt-6 flex flex-col items-center gap-4">
-              <input
-                type="file"
-                name="timesheet"
-                accept=".xlsx,.xls,.csv"
-                required
-                class="block max-w-xs text-sm text-muted file:mr-3 file:cursor-pointer file:rounded-xl file:border-0 file:bg-brand/10 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-brand hover:file:bg-brand/15"
-              />
-              <button
-                type="submit"
-                class="press inline-flex items-center gap-2 rounded-2xl bg-brand hover:bg-[#3f1670] px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand/30"
-              >
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="2.2"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  class="h-4 w-4"
-                >
-                  <path d="M5 12h14M13 6l6 6-6 6" />
-                </svg>
-                Upload &amp; preview
-              </button>
-            </div>
-          </form>
         </>
       )}
     </div>
