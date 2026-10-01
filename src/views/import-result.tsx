@@ -48,10 +48,7 @@ export function ImportResultPage({
 
   return (
     <div>
-      <a href="/" class="text-sm font-semibold text-brand hover:underline">
-        ← Dashboard
-      </a>
-      <div class="mt-4 mb-6">
+      <div class="mb-6">
         <h1 class="text-2xl font-extrabold tracking-tight text-ink">Posted — {label}</h1>
         <p class="mt-1.5 text-sm text-muted">
           Each company marked &quot;Draft run created&quot; has a <strong>draft</strong> {label}{" "}

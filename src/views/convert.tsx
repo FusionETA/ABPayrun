@@ -276,10 +276,7 @@ export function ConvertPage({
   const missing = companies.filter((v) => !v.company.code)
   const codes = companies.flatMap((v) => (v.company.code ? [v.company.code] : [])).sort()
   return (
-    <div>
-      <a href="/" class="text-sm font-semibold text-brand hover:underline">
-        ← Dashboard
-      </a>
+    <div class="[&>*:first-child]:mt-0">
 
       {resume ? (
         <div class="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-brand/20 bg-brand/5 px-4 py-3 text-sm">
