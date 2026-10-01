@@ -6,6 +6,7 @@
  * screen and then executed, so what you approve is what is sent.
  */
 
+import { comparePeriods, currentPeriod, periodLabel, type Period } from "../lib/period"
 import type { EmployeeLine } from "./timesheet"
 
 /** A timesheet column that posts as an AltomateHR pay item. */
@@ -257,4 +258,67 @@ export function planCompany(input: {
     .sort((a, b) => a.name.localeCompare(b.name))
 
   return { employees, excluded, problems, warnings }
+}
+
+/**
+ * The date a basic-salary change from the timesheet takes effect: the first
+ * of the payroll month. AltomateHR only takes today or earlier, so a month
+ * that hasn't started yet is recorded from today.
+ */
+export function salaryEffectiveDate(period: Period, now: Date = new Date()): string {
+  const iso = (p: Period, day: number) =>
+    `${p.year}-${String(p.month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+  return comparePeriods(period, currentPeriod(now)) > 0
+    ? iso(currentPeriod(now), now.getDate())
+    : iso(period, 1)
+}
+
+/** A company's payroll run in AltomateHR, as far as deciding goes. */
+export type ExistingRun = {
+  id: string
+  periodYear: number
+  periodMonth: number
+  status: "DRAFT" | "PENDING_APPROVAL" | "SUBMITTED"
+}
+
+/**
+ * What posting `period` does with a company's runs. `ownRunId` is the run
+ * an earlier upload of this month made (from ABPay's records), if any.
+ *   - the month is approved (SUBMITTED) → "approved": left alone;
+ *   - the month has ABPay's draft / pending run → "replace" it;
+ *   - no run for the month → "create" one.
+ * Plus what stops it: a later month already run, a run for the month that
+ * ABPay didn't make, or an earlier month not approved yet.
+ */
+export function decideRun<R extends ExistingRun>(
+  runs: R[],
+  period: Period,
+  ownRunId: string | null,
+): { action: "create" | "replace" | "approved"; existing: R | null; problems: string[] } {
+  const of = (r: R): Period => ({ year: r.periodYear, month: r.periodMonth })
+  const newestFirst = [...runs].sort((x, y) => comparePeriods(of(y), of(x)))
+  const later = newestFirst.find((r) => comparePeriods(of(r), period) > 0)
+  const same = runs.find((r) => comparePeriods(of(r), period) === 0) ?? null
+  const earlier = newestFirst.find((r) => comparePeriods(of(r), period) < 0)
+  const label = periodLabel(period)
+
+  if (same?.status === "SUBMITTED") return { action: "approved", existing: same, problems: [] }
+
+  const problems: string[] = []
+  if (later) {
+    problems.push(
+      `AltomateHR already has a ${periodLabel(of(later))} run, so ${label} can't be posted any more.`,
+    )
+  }
+  if (same && same.id !== ownRunId) {
+    problems.push(
+      `AltomateHR has a ${label} run ABPay didn't make, so ABPay won't replace it. Delete it in AltomateHR, then reload this page.`,
+    )
+  }
+  if (earlier && earlier.status !== "SUBMITTED") {
+    problems.push(
+      `${periodLabel(of(earlier))} isn't approved yet — submit it in AltomateHR before ${label} can be posted.`,
+    )
+  }
+  return { action: same ? "replace" : "create", existing: same, problems }
 }

@@ -6,3 +6,6 @@ data/*.sqlite-wal
 .env
 *.log
 .DS_Store
+
+# Test timesheets carry real staff names and pay
+test-timesheets/

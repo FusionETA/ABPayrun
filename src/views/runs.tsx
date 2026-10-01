@@ -64,7 +64,7 @@ function ArrowIcon() {
   )
 }
 
-/** Top banner: the single next month to run, or why it can't be started. */
+/** Top banner: the months that can run next, or why none can. */
 function NextRunBanner({ overview }: { overview: RunsOverview }) {
   if (overview.loadedCount === 0) {
     return (
@@ -91,7 +91,7 @@ function NextRunBanner({ overview }: { overview: RunsOverview }) {
         <h2 class="text-base font-bold text-amber-800">Waiting on approval</h2>
         <p class="mt-1 text-sm text-amber-700">
           Every company&apos;s latest run must be submitted in AltomateHR before the
-          next month can start. Still open:
+          next month can start. Until then, the open month can be re-imported. Still open:
         </p>
         <ul class="mt-3 space-y-1.5">
           {overview.blocked.map((v) => (
@@ -100,47 +100,48 @@ function NextRunBanner({ overview }: { overview: RunsOverview }) {
             </li>
           ))}
         </ul>
-      </div>
-    )
-  }
-
-  if (overview.inSync && overview.unifiedNext) {
-    return (
-      <div class="glass rounded-3xl p-6">
-        <div class="flex flex-wrap items-center justify-between gap-4">
-          <div>
-            <p class="text-xs font-semibold uppercase tracking-wide text-muted">
-              Next payroll run
-            </p>
-            <h2 class="mt-1 text-2xl font-extrabold tracking-tight text-brand">
-              {periodLabel(overview.unifiedNext)}
-            </h2>
-            <p class="mt-1 text-sm text-muted">
-              All {overview.loadedCount} connected companies are approved and up to
-              date. Upload one timesheet and ABPay splits it per company.
-            </p>
+        {overview.reopen ? (
+          <div class="mt-4 flex flex-wrap items-center gap-3">
+            <a
+              href="/convert"
+              class="press inline-flex items-center gap-2 rounded-2xl bg-brand hover:bg-[#3f1670] px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-brand/30"
+            >
+              Re-import {periodLabel(overview.reopen)} <ArrowIcon />
+            </a>
+            <span class="text-xs text-amber-700">
+              Upload {periodLabel(overview.reopen)} again to change it — ABPay replaces its draft
+              runs.
+            </span>
           </div>
-          <a
-            href="/convert"
-            class="press inline-flex items-center gap-2 rounded-2xl bg-brand hover:bg-[#3f1670] px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand/30"
-          >
-            Upload {periodLabel(overview.unifiedNext)} timesheet <ArrowIcon />
-          </a>
-        </div>
+        ) : null}
       </div>
     )
   }
 
-  // Everyone's approved, but they're on different next months.
+  const { earliest } = overview
   return (
-    <div class="rounded-3xl border border-amber-200/70 bg-amber-50/80 p-6">
-      <h2 class="text-base font-bold text-amber-800">Companies are out of sync</h2>
-      <p class="mt-1 text-sm text-amber-700">
-        Your connected companies aren&apos;t all on the same next month, so a single
-        combined upload is paused. Bring the trailing companies up to the same
-        period (run their missing months first) — each one&apos;s next month is shown
-        below.
-      </p>
+    <div class="glass rounded-3xl p-6">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <p class="text-xs font-semibold uppercase tracking-wide text-muted">
+            Next payroll run
+          </p>
+          <h2 class="mt-1 text-2xl font-extrabold tracking-tight text-brand">
+            {earliest ? `${periodLabel(earliest)} or later` : "Any month"}
+          </h2>
+          <p class="mt-1 text-sm text-muted">
+            {earliest
+              ? `All ${overview.loadedCount} connected companies are approved. Choose the month when you upload — ${periodLabel(earliest)} is the earliest, after the newest run.`
+              : "No company has a payroll run yet, so you can start from any month. Choose it when you upload."}
+          </p>
+        </div>
+        <a
+          href="/convert"
+          class="press inline-flex items-center gap-2 rounded-2xl bg-brand hover:bg-[#3f1670] px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand/30"
+        >
+          Upload timesheet <ArrowIcon />
+        </a>
+      </div>
     </div>
   )
 }
@@ -204,11 +205,15 @@ function EmptyRunCells({ label }: { label: string }) {
   )
 }
 
-/** What the company must do next: its next month, or the run to submit first. */
+/** What the company must do next: its earliest month, or the run to submit first. */
 function NextCell({ view }: { view: CompanyRunsView }) {
   if (!view.connected || view.error) return <span class="text-muted">—</span>
-  if (view.ready && view.next) {
-    return <span class="whitespace-nowrap font-bold text-brand">{periodLabel(view.next)}</span>
+  if (view.ready) {
+    return (
+      <span class="whitespace-nowrap font-bold text-brand">
+        {view.next ? `${periodLabel(view.next)} or later` : "Any month"}
+      </span>
+    )
   }
   return (
     <span class="whitespace-nowrap font-bold text-amber-700">
@@ -291,8 +296,9 @@ export function RunsPage({ overview }: { overview: RunsOverview }) {
       <div class="mb-6">
         <h1 class="text-2xl font-extrabold tracking-tight text-ink">Payroll runs</h1>
         <p class="mt-1.5 text-sm text-muted">
-          Read live from AltomateHR. Each month runs in sequence — the next month
-          only opens once every company&apos;s latest run is approved (submitted).
+          Read live from AltomateHR. A month can only run after a company&apos;s
+          latest one, and only once every company&apos;s latest run is approved
+          (submitted).
         </p>
       </div>
 

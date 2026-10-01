@@ -328,7 +328,7 @@ function describeError(body: unknown): string {
  */
 async function altomateSend<T>(
   token: string,
-  method: "GET" | "POST" | "PUT",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   path: string,
   body?: unknown,
 ): Promise<T> {
@@ -450,6 +450,14 @@ export async function createPayrollRun(
   return altomateSend<AltomateRunDetail>(token, "POST", "/payroll/runs", input)
 }
 
+/**
+ * Delete a run that isn't submitted yet — how a re-import replaces the draft
+ * an earlier upload made. A run AltomateHR won't delete fails with its reason.
+ */
+export async function deletePayrollRun(token: string, runId: string): Promise<void> {
+  await altomateSend(token, "DELETE", `/payroll/runs/${encodeURIComponent(runId)}`)
+}
+
 export async function getPayrollRun(token: string, runId: string): Promise<AltomateRunDetail> {
   const detail = await altomateSend<{ run: AltomateRunDetail }>(
     token,
@@ -509,19 +517,35 @@ export async function generatePayrollRun(
   return { payslipCount: r.payslipCount, skippedEmployees: r.skippedEmployees, run: r.detail.run }
 }
 
+export type SalaryChangeReason = "RAISE" | "PROMOTION" | "DEMOTION" | "RESTRUCTURE" | "OTHER"
+
 /**
  * Set new basic salaries through AltomateHR's salary-change import (all or
- * nothing, each change recorded in the person's salary history).
+ * nothing, each change recorded in the person's salary history). The new
+ * salary applies straight away; `effectiveDate` (YYYY-MM-DD, today or
+ * earlier) is the date the history records it from.
  */
 export async function importSalaryChanges(
   token: string,
-  rows: { email: string; newSalary: number; notes: string }[],
+  rows: {
+    email: string
+    newSalary: number
+    effectiveDate: string
+    reason: SalaryChangeReason
+    notes: string
+  }[],
 ): Promise<{ changed: number }> {
   const csvField = (v: string) => (/[",\n\r]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v)
   const lines = [
-    "Email,New Salary,Reason,Notes",
+    "Email,New Salary,Effective Date,Reason,Notes",
     ...rows.map((r) =>
-      [csvField(r.email), r.newSalary.toFixed(2), "OTHER", csvField(r.notes)].join(","),
+      [
+        csvField(r.email),
+        r.newSalary.toFixed(2),
+        r.effectiveDate,
+        r.reason,
+        csvField(r.notes),
+      ].join(","),
     ),
   ]
   const form = new FormData()

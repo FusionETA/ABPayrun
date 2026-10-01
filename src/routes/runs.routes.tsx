@@ -2,7 +2,7 @@ import { Hono } from "hono"
 
 import type { ParsedTimesheet } from "../domain/timesheet"
 import type { AppEnv } from "../lib/hono-env"
-import { periodLabel } from "../lib/period"
+import { periodLabel, parsePeriodKey, samePeriod } from "../lib/period"
 import { requireAuth } from "../middleware/auth.middleware"
 import { listCompanies } from "../repositories/company.repository"
 import {
@@ -12,7 +12,7 @@ import {
   resetImport,
   saveImportPayload,
 } from "../repositories/import.repository"
-import { clearRunsForImport } from "../repositories/run.repository"
+import { resetRunsForImport } from "../repositories/run.repository"
 import { getRunsOverview } from "../services/runs.service"
 import { parseTimesheet } from "../services/timesheet.service"
 import { validateTimesheet } from "../services/validate.service"
@@ -51,32 +51,34 @@ function convertUploadError(code: string | undefined): string | null {
       return "No file received — pick an .xlsx timesheet and try again."
     case "parse":
       return "Couldn't read that file — is it the timesheet .xlsx?"
+    case "period":
+      return "Choose a payroll month from the list — that month can't be run."
     default:
       return null
   }
 }
 
 /**
- * Convert flow (GET). The allowed month is recomputed server-side; there is
- * no month parameter to tamper with, so a run can only be started for the
- * next month in sequence, and only when every company is in sync.
+ * Convert flow (GET). The months on offer are recomputed server-side from
+ * each company's runs: from the month after the newest run (or a year back
+ * when there are none) up to next month once every company's latest run is
+ * approved — or, while a month is waiting on approval, just that month, to
+ * re-import it.
  */
 runsRoutes.get("/convert", requireAuth, async (c) => {
   const user = c.get("user")
   const overview = await getRunsOverview()
 
-  const allowed = overview.inSync ? overview.unifiedNext : null
   let reason: string | null = null
-  if (!allowed) {
+  if (overview.choices.length === 0) {
     if (overview.loadedCount === 0) {
       reason =
         "No companies are connected yet — connect one on the Companies page first."
-    } else if (overview.blocked.length > 0) {
-      const names = overview.blocked.map((b) => b.company.name).join(", ")
-      reason = `Waiting on approval: ${names}. Submit each company's latest run in AltomateHR before the next month can run.`
     } else {
-      reason =
-        "Your connected companies are on different next months. Bring the trailing companies up to the same period before a combined run."
+      const open = overview.blocked
+        .map((b) => `${b.company.name} (${b.latest ? periodLabel(b.latest) : "latest run"})`)
+        .join(", ")
+      reason = `Runs in more than one month are waiting on approval: ${open}. Submit the earlier month's runs in AltomateHR — then that month can be re-imported, or the next one started.`
     }
   }
 
@@ -105,9 +107,11 @@ runsRoutes.get("/convert", requireAuth, async (c) => {
     >
       <ConvertPage
         resume={resume}
-        month={allowed}
+        choices={overview.choices}
+        earliest={overview.earliest}
+        reopen={overview.reopen}
         companies={overview.companies.filter((v) => v.connected && !v.error)}
-        reason={allowed ? null : reason}
+        reason={reason}
         uploadError={convertUploadError(c.req.query("uploadError"))}
       />
     </Layout>,
@@ -123,10 +127,14 @@ runsRoutes.get("/convert", requireAuth, async (c) => {
 runsRoutes.post("/convert", requireAuth, async (c) => {
   const user = c.get("user")
   const overview = await getRunsOverview()
-  const allowed = overview.inSync ? overview.unifiedNext : null
-  if (!allowed) return c.redirect("/convert")
+  if (overview.choices.length === 0) return c.redirect("/convert")
 
   const body = await c.req.parseBody()
+  // Only a month the list offers is accepted; the list is rebuilt from live
+  // runs, so a month that's been run since the page loaded is refused.
+  const picked = parsePeriodKey(String(body["period"] ?? ""))
+  const allowed = picked && overview.choices.find((p) => samePeriod(p, picked))
+  if (!allowed) return c.redirect("/convert?uploadError=period")
   const file = body["timesheet"]
   if (!(file instanceof File) || file.size === 0) {
     return c.redirect("/convert?uploadError=nofile")
@@ -148,10 +156,15 @@ runsRoutes.post("/convert", requireAuth, async (c) => {
   const report = await validateTimesheet(parsed, companies)
 
   // Keep the upload as this month's import, so the column-mapping, review
-  // and post steps can come back to it. The month's runs can't exist yet
-  // (the month only opens once every company's latest run is submitted), so
-  // any earlier attempt at it is safe to start over.
+  // and post steps can come back to it. Uploading a month again starts it
+  // over: posting replaces the draft runs ABPay made for it (their ids are
+  // kept for that) and leaves any company already approved alone. Only an
+  // import being posted right now has to finish first.
   const existing = await findImportByPeriod(allowed.year, allowed.month)
+  if (existing?.status === "POSTING") {
+    const msg = `${periodLabel(allowed)} is being posted right now — wait for it to finish.`
+    return c.redirect(`/convert?err=${encodeURIComponent(msg)}`)
+  }
   const importId =
     existing?.id ??
     (await createImport({
@@ -162,7 +175,7 @@ runsRoutes.post("/convert", requireAuth, async (c) => {
     }))
   if (existing) {
     await resetImport(existing.id, { filename: file.name, uploadedBy: user.email })
-    await clearRunsForImport(existing.id)
+    await resetRunsForImport(existing.id)
   }
   await saveImportPayload(importId, JSON.stringify(parsed))
 

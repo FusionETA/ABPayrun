@@ -15,6 +15,10 @@ const STATUS: Record<string, { label: string; cls: string }> = {
   FAILED: { label: "Failed", cls: "bg-red-100/70 text-red-700 ring-red-200" },
   POSTING: { label: "Interrupted", cls: "bg-amber-100/70 text-amber-700 ring-amber-200" },
   PENDING: { label: "Not posted", cls: "bg-slate-100/70 text-slate-600 ring-slate-200" },
+  APPROVED: {
+    label: "Already approved — left as is",
+    cls: "bg-slate-100/70 text-slate-600 ring-slate-200",
+  },
 }
 
 function summaryOf(run: PostedRun | undefined): PostedRunSummary | null {
@@ -38,7 +42,9 @@ export function ImportResultPage({
   companies: { code: string; name: string; run: PostedRun | undefined }[]
 }) {
   const label = periodLabel(period)
-  const incomplete = companies.some((c) => c.run?.status !== "POSTED")
+  const incomplete = companies.some(
+    (c) => c.run?.status !== "POSTED" && c.run?.status !== "APPROVED",
+  )
 
   return (
     <div>
@@ -62,7 +68,7 @@ export function ImportResultPage({
             </h2>
             <p class="mt-1 text-sm text-amber-700">
               Posting stops at the first company that fails. Fix the error below, then post again
-              — companies already done are skipped, and a draft run ABPay already made is reused.
+              — companies already done are skipped, and a draft run ABPay already made is replaced.
             </p>
           </div>
           <a

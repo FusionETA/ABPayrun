@@ -54,6 +54,15 @@ export async function recordRun(input: {
 }
 
 /** Forget an import's earlier posting attempts (a fresh upload starts over). */
-export async function clearRunsForImport(importId: number): Promise<void> {
-  await pool.query("DELETE FROM posted_run WHERE import_id = :importId", { importId })
+/**
+ * A new upload of the month: every company is to be posted again, but the
+ * AltomateHR run ids are kept — they're how ABPay knows which draft runs
+ * are its own to replace.
+ */
+export async function resetRunsForImport(importId: number): Promise<void> {
+  await pool.query(
+    `UPDATE posted_run SET status = 'PENDING', error = NULL, posted_at = NULL, summary_json = NULL
+     WHERE import_id = :importId`,
+    { importId },
+  )
 }

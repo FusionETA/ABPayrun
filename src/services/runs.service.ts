@@ -1,9 +1,12 @@
 import { decryptSecret } from "../lib/crypto"
 import {
+  addMonths,
+  comparePeriods,
   currentPeriod,
   nextPeriod,
   periodKey,
   periodLabel,
+  periodRange,
   type Period,
 } from "../lib/period"
 import {
@@ -34,7 +37,10 @@ export type CompanyRunsView = {
    * is still DRAFT / PENDING_APPROVAL — that month must be submitted first.
    */
   ready: boolean
-  /** The next runnable month when `ready`; null when blocked. */
+  /**
+   * The earliest month this company can run: the one after its latest run.
+   * Null when blocked, or when it has no runs yet (then any month can run).
+   */
   next: Period | null
   /** Why the company can't advance yet (latest run not submitted), else null. */
   blockedReason: string | null
@@ -48,11 +54,31 @@ export type RunsOverview = {
   loadedCount: number
   /** Loaded companies whose latest run isn't submitted — these block the run. */
   blocked: CompanyRunsView[]
-  /** Every loaded company is ready AND agrees on the same next period. */
-  inSync: boolean
-  /** The shared next period when in sync; null otherwise. */
-  unifiedNext: Period | null
+  /**
+   * The earliest month an upload can be for: the latest `next` across the
+   * companies, so no company gets a month at or before one it has already
+   * run. Null when no company has a run yet.
+   */
+  earliest: Period | null
+  /**
+   * The month still waiting on approval, when there is one: it's the only
+   * month that can be uploaded, again, to change it. Null when every
+   * company's latest run is approved.
+   */
+  reopen: Period | null
+  /**
+   * The months the upload may be for, oldest first. Just `reopen` while a
+   * month is waiting on approval; empty when nothing can run (no company
+   * loaded, or runs waiting on approval in more than one month).
+   */
+  choices: Period[]
 }
+
+/**
+ * How far back the month list reaches when no company has a run yet, so a
+ * first upload can catch up on earlier months.
+ */
+const LOOKBACK_MONTHS = 12
 
 function toPeriod(run: AltomatePayrollRun): Period {
   return { year: run.periodYear, month: run.periodMonth }
@@ -111,7 +137,7 @@ async function loadCompany(company: CompanyRecord): Promise<CompanyRunsView> {
   // run is SUBMITTED (approved). A DRAFT / PENDING_APPROVAL latest run means
   // that month is still open — it must be submitted in AltomateHR first.
   let ready = true
-  let next: Period | null = currentPeriod()
+  let next: Period | null = null
   let blockedReason: string | null = null
 
   if (newest) {
@@ -123,7 +149,9 @@ async function loadCompany(company: CompanyRecord): Promise<CompanyRunsView> {
       const state = newest.status === "DRAFT" ? "still a draft" : "awaiting approval"
       blockedReason = `${periodLabel(
         toPeriod(newest),
-      )} is ${state} — submit it in AltomateHR before the next month can run.`
+      )} is ${state} — submit it in AltomateHR before the next month can run, or re-import ${periodLabel(
+        toPeriod(newest),
+      )} to change it.`
     }
   }
 
@@ -142,46 +170,55 @@ async function loadCompany(company: CompanyRecord): Promise<CompanyRunsView> {
 
 /**
  * Fan out across every connected company, read its payroll runs live from
- * AltomateHR, and compute the next period each is allowed to run. A
- * combined run is only offered when EVERY connected company's latest run
- * is submitted (approved) and they all land on the same next month.
+ * AltomateHR, and work out which months an upload can be for:
+ *   - every company's latest run approved → the month after the newest run
+ *     any company has (a company with no runs doesn't limit it), up to next
+ *     month;
+ *   - a month not approved yet → only that month, uploaded again to change
+ *     it. The next month opens once all of it is approved.
  */
 export async function getRunsOverview(): Promise<RunsOverview> {
   const companies = await listCompanies()
   const views = await Promise.all(companies.map(loadCompany))
 
   const loaded = views.filter((v) => v.connected && !v.error)
-
-  // A company with NO runs shouldn't force everyone to the current month —
-  // it follows the pack. Anchor = the single next month that the ready
-  // companies WITH runs agree on (e.g. ABM + ABSA both → July); align the
-  // no-run companies to it so a fresh company doesn't sit a month ahead and
-  // break the sync. No run-having companies → keep the current-month
-  // default (a genuine first-ever run).
-  const readyWithRuns = loaded.filter(
-    (v) => v.latest != null && v.ready && v.next != null,
-  )
-  const anchorFirst = readyWithRuns[0]
-  const anchorKeys = new Set(readyWithRuns.map((v) => periodKey(v.next!)))
-  if (anchorFirst?.next && anchorKeys.size === 1) {
-    for (const v of loaded) {
-      if (v.latest == null && v.ready) v.next = anchorFirst.next
-    }
-  }
-
   const blocked = loaded.filter((v) => !v.ready)
 
-  // A single combined next month only exists when nothing is blocked AND
-  // every ready company points at the same month.
-  const nextKeys = new Set(loaded.map((v) => (v.next ? periodKey(v.next) : "—")))
-  const firstLoaded = loaded[0]
-  const inSync =
-    loaded.length > 0 &&
-    blocked.length === 0 &&
-    nextKeys.size === 1 &&
-    firstLoaded != null &&
-    firstLoaded.next != null
-  const unifiedNext = inSync && firstLoaded ? firstLoaded.next : null
+  return { companies: views, loadedCount: loaded.length, blocked, ...monthChoices(loaded) }
+}
 
-  return { companies: views, loadedCount: loaded.length, blocked, inSync, unifiedNext }
+/**
+ * Which months an upload can be for, from the companies that loaded (see
+ * `getRunsOverview`). Pure, so the rules can be tested without AltomateHR.
+ */
+export function monthChoices(
+  loaded: Pick<CompanyRunsView, "ready" | "latest" | "next">[],
+  now: Period = currentPeriod(),
+): Pick<RunsOverview, "earliest" | "reopen" | "choices"> {
+  const blocked = loaded.filter((v) => !v.ready)
+
+  let earliest: Period | null = null
+  for (const v of loaded) {
+    if (v.next && (!earliest || comparePeriods(v.next, earliest) > 0)) earliest = v.next
+  }
+
+  let reopen: Period | null = null
+  let choices: Period[] = []
+  if (blocked.length > 0) {
+    // Re-importing is only possible when the open runs are all one month and
+    // no company has already run past it.
+    const open = blocked[0]!.latest!
+    const oneMonth = blocked.every((v) => comparePeriods(v.latest!, open) === 0)
+    const nothingLater = loaded.every((v) => !v.latest || comparePeriods(v.latest, open) <= 0)
+    if (oneMonth && nothingLater) {
+      reopen = open
+      choices = [open]
+    }
+  } else if (loaded.length > 0) {
+    const from = earliest ?? addMonths(now, -LOOKBACK_MONTHS)
+    const to = addMonths(comparePeriods(from, now) > 0 ? from : now, 1)
+    choices = periodRange(from, to)
+  }
+
+  return { earliest, reopen, choices }
 }

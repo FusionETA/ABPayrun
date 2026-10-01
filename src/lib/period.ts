@@ -34,11 +34,36 @@ export function periodKey(p: Period): string {
   return `${p.year}-${String(p.month).padStart(2, "0")}`
 }
 
+/** Parse a "YYYY-MM" key back into a period; null when it isn't one. */
+export function parsePeriodKey(key: string): Period | null {
+  const m = /^(\d{4})-(\d{2})$/.exec(key.trim())
+  if (!m) return null
+  const year = Number(m[1])
+  const month = Number(m[2])
+  return month >= 1 && month <= 12 ? { year, month } : null
+}
+
 /** The calendar month after `p` (rolls December → next January). */
 export function nextPeriod(p: Period): Period {
-  return p.month === 12
-    ? { year: p.year + 1, month: 1 }
-    : { year: p.year, month: p.month + 1 }
+  return addMonths(p, 1)
+}
+
+/** `p` moved by `n` months (negative goes back). */
+export function addMonths(p: Period, n: number): Period {
+  const i = p.year * 12 + (p.month - 1) + n
+  return { year: Math.floor(i / 12), month: (i % 12) + 1 }
+}
+
+/** Negative when `a` is before `b`, 0 when the same month, positive after. */
+export function comparePeriods(a: Period, b: Period): number {
+  return (a.year - b.year) * 12 + (a.month - b.month)
+}
+
+/** Every month from `from` to `to`, inclusive, oldest first. */
+export function periodRange(from: Period, to: Period): Period[] {
+  const out: Period[] = []
+  for (let p = from; comparePeriods(p, to) <= 0; p = nextPeriod(p)) out.push(p)
+  return out
 }
 
 /** The current month in the server's local timezone. */

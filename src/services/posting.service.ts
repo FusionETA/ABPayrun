@@ -1,7 +1,9 @@
 import {
   MAPPABLE_COLUMNS,
   planCompany,
+  decideRun,
   resolveMapping,
+  salaryEffectiveDate,
   type ColumnMapping,
   type CompanyPlan,
 } from "../domain/posting"
@@ -21,12 +23,14 @@ import { listRunsForImport, recordRun, type PostedRun } from "../repositories/ru
 import {
   AltomateApiError,
   createPayrollRun,
+  deletePayrollRun,
   generatePayrollRun,
-  getPayrollRun,
   importSalaryChanges,
   listAdjustmentCategories,
   listPayrollEmployees,
+  listPayrollRuns,
   saveRunAdjustment,
+  type AltomatePayrollRun,
   type AltomateAdjustmentCategory,
 } from "./altomate.service"
 import { validateTimesheet } from "./validate.service"
@@ -97,6 +101,14 @@ export type CompanyPostingPlan = {
   /** Couldn't build a plan at all (no token, AltomateHR down, missing scope). */
   error: string | null
   posted: PostedRun | null
+  /**
+   * What posting does with the month's run: make it, replace the draft an
+   * earlier upload of this month made, or nothing — the month is already
+   * approved for this company. Null when there's no plan.
+   */
+  action: "create" | "replace" | "approved" | null
+  /** The company's run for this month in AltomateHR, if it has one. */
+  existingRun: AltomatePayrollRun | null
 }
 
 export type PostingPlan = {
@@ -132,12 +144,14 @@ export async function buildPostingPlan(importId: number): Promise<PostingPlan | 
   const results = await Promise.all(
     report.companies.map(async (v): Promise<CompanyPostingPlan> => {
       const company = byCode.get(v.code.toUpperCase()) ?? null
-      const already = posted.find((p) => p.company_code === v.code) ?? null
+      let already = posted.find((p) => p.company_code === v.code) ?? null
       const base = {
         code: v.code,
         companyName: v.companyName ?? v.code,
         company,
         posted: already,
+        action: null,
+        existingRun: null,
       }
       if (v.error || !company) {
         return { ...base, plan: null, error: v.error ?? `No company uses the code ${v.code}.` }
@@ -146,14 +160,24 @@ export async function buildPostingPlan(importId: number): Promise<PostingPlan | 
       if (!token) return { ...base, plan: null, error: "No API token connected." }
 
       let payrollEmployees
+      let runs
       try {
-        payrollEmployees = await listPayrollEmployees(token)
+        ;[payrollEmployees, runs] = await Promise.all([
+          listPayrollEmployees(token),
+          listPayrollRuns(token),
+        ])
       } catch (err) {
         return {
           ...base,
           plan: null,
           error: describe(err, "Couldn't load payroll profiles from AltomateHR."),
         }
+      }
+      // AltomateHR is the record: a run ABPay posted that has since been
+      // deleted there counts as not posted, so posting again recreates it.
+      if (already?.altomate_run_id && !runs.some((r) => r.id === already!.altomate_run_id)) {
+        already = null
+        base.posted = null
       }
 
       const plan = planCompany({
@@ -167,15 +191,26 @@ export async function buildPostingPlan(importId: number): Promise<PostingPlan | 
       for (const o of v.outlets) {
         if (!o.matched) plan.problems.push(`Outlet ${o.outlet} isn't matched to an AltomateHR project.`)
       }
-      return { ...base, plan, error: null }
+      // Where the month stands in AltomateHR now — runs may have changed
+      // since the upload.
+      const decision = decideRun(runs, imp.period, already?.altomate_run_id ?? null)
+      plan.problems.push(...decision.problems)
+      return { ...base, plan, error: null, action: decision.action, existingRun: decision.existing }
     }),
   )
 
   const problems: string[] = []
   for (const r of results) {
     if (r.posted?.status === "POSTED") continue // done; nothing more is sent
+    if (r.action === "approved") continue // approved in AltomateHR; left alone
     if (r.error) problems.push(`${r.companyName}: ${r.error}`)
     for (const p of r.plan?.problems ?? []) problems.push(`${r.companyName}: ${p}`)
+  }
+
+  if (results.length > 0 && results.every((r) => r.action === "approved")) {
+    problems.push(
+      `Every company on this timesheet already has an approved ${periodLabel(imp.period)} run — there's nothing to post.`,
+    )
   }
 
   return { imp, mapping, companies: results, problems, ok: problems.length === 0 }
@@ -205,9 +240,13 @@ export type PostOutcome =
  *   4. run payroll (EPF, SOCSO, EIS, PCB are computed by AltomateHR).
  * Runs stay DRAFT: the admin reviews and submits them in AltomateHR.
  *
+ * A company whose month is already approved in AltomateHR is left alone.
+ * One with a draft from an earlier upload of this month gets that run
+ * deleted and made again, so the new upload replaces it whole.
+ *
  * It stops at the first company that fails, so a problem is fixed once
  * rather than repeated eleven times; posting again resumes — companies
- * already POSTED are skipped and a recorded draft run is reused.
+ * already POSTED are skipped, and the rest are replaced as above.
  */
 export async function postImport(importId: number, postedBy: string): Promise<PostOutcome> {
   const plan = await buildPostingPlan(importId)
@@ -224,6 +263,19 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
 
   try {
     for (const c of plan.companies) {
+      if (c.action === "approved") {
+        // Approved in AltomateHR: nothing is sent. A run this import posted
+        // keeps its record; otherwise note why the company was passed over.
+        if (c.posted?.status !== "POSTED") {
+          await recordRun({
+            importId,
+            companyCode: c.code,
+            altomateRunId: c.existingRun?.id ?? null,
+            status: "APPROVED",
+          })
+        }
+        continue
+      }
       if (c.posted?.status === "POSTED") {
         posted++
         continue
@@ -231,47 +283,50 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
       const company = c.company!
       const token = tokenOf(company)!
       const companyPlan = c.plan!
-      let runId: string | null = c.posted?.altomate_run_id ?? null
+      let runId: string | null = null
 
       try {
         // 1. Salaries first, so the run is generated on the new figures.
         const changes = companyPlan.employees.filter((e) => e.newSalary != null)
         if (changes.length > 0) {
+          const effectiveDate = salaryEffectiveDate(plan.imp.period)
           await importSalaryChanges(
             token,
             changes.map((e) => ({
               email: e.email,
               newSalary: e.newSalary!,
-              notes: `ABPay timesheet ${label}`,
+              effectiveDate,
+              reason:
+                e.currentSalary != null && e.newSalary! > e.currentSalary ? "RAISE" : "OTHER",
+              notes: `ABPay timesheet ${label}: ${
+                e.currentSalary != null ? e.currentSalary.toFixed(2) : "—"
+              } → ${e.newSalary!.toFixed(2)}`,
             })),
           )
         }
 
-        // 2. The month's run — reuse the draft an earlier attempt made.
-        if (runId) {
-          const existing = await getPayrollRun(token, runId).catch(() => null)
-          if (!existing || existing.status !== "DRAFT") runId = null
+        // 2. The month's run — a draft an earlier upload made is replaced.
+        if (c.action === "replace" && c.existingRun) {
+          await deletePayrollRun(token, c.existingRun.id)
         }
-        if (!runId) {
-          try {
-            const run = await createPayrollRun(token, {
-              periodYear: plan.imp.period.year,
-              periodMonth: plan.imp.period.month,
-              excludedEmployeeProfileIds: companyPlan.excluded.map((e) => e.employeeProfileId),
-            })
-            runId = run.id
-          } catch (err) {
-            if (err instanceof AltomateApiError && err.code === "conflict") {
-              throw new AltomateApiError(
-                "conflict",
-                `AltomateHR already has a ${label} run that ABPay didn't create, so ABPay won't change it. Delete that draft in AltomateHR, then post again.`,
-              )
-            }
-            throw err
+        try {
+          const run = await createPayrollRun(token, {
+            periodYear: plan.imp.period.year,
+            periodMonth: plan.imp.period.month,
+            excludedEmployeeProfileIds: companyPlan.excluded.map((e) => e.employeeProfileId),
+          })
+          runId = run.id
+        } catch (err) {
+          if (err instanceof AltomateApiError && err.code === "conflict") {
+            throw new AltomateApiError(
+              "conflict",
+              `AltomateHR already has a ${label} run that ABPay didn't create, so ABPay won't change it. Delete that draft in AltomateHR, then post again.`,
+            )
           }
-          // Remember it straight away: a crash after this must not create a second run.
-          await recordRun({ importId, companyCode: c.code, altomateRunId: runId, status: "POSTING" })
+          throw err
         }
+        // Remember it straight away: a crash after this must not create a second run.
+        await recordRun({ importId, companyCode: c.code, altomateRunId: runId, status: "POSTING" })
 
         // 3. Each person's pay lines (PUT replaces, so a retry is idempotent).
         for (const e of companyPlan.employees) {
@@ -321,7 +376,7 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
       }
     }
   } finally {
-    const total = plan.companies.length
+    const total = plan.companies.filter((c) => c.action !== "approved").length
     await updateImportStatus(
       importId,
       posted === total ? "POSTED" : posted > 0 ? "PARTIAL" : "FAILED",

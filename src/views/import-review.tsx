@@ -1,4 +1,9 @@
-import { MAPPABLE_COLUMNS, type EmployeePlan, type MappableKey } from "../domain/posting"
+import {
+  MAPPABLE_COLUMNS,
+  salaryEffectiveDate,
+  type EmployeePlan,
+  type MappableKey,
+} from "../domain/posting"
 import { periodLabel } from "../lib/period"
 import type { AltomateAdjustmentCategory } from "../services/altomate.service"
 import type { CompanyPostingPlan, PostingPlan } from "../services/posting.service"
@@ -60,7 +65,8 @@ function CompanyRows({
   const group = `review-${c.code}`
   const plan = c.plan
   const done = c.posted?.status === "POSTED"
-  const problems = plan?.problems ?? []
+  const approved = c.action === "approved"
+  const problems = approved ? [] : (plan?.problems ?? [])
   const open = !done && (problems.length > 0 || !!c.error)
   const changes = plan?.employees.filter((e) => e.newSalary != null).length ?? 0
 
@@ -82,7 +88,11 @@ function CompanyRows({
             <span class="rounded-md bg-brand/10 px-1.5 py-0.5 text-[11px] font-bold uppercase text-brand">
               {c.code}
             </span>
-            {done ? (
+            {approved ? (
+              <span class="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600 ring-1 ring-inset ring-slate-200">
+                Approved in AltomateHR — left as is
+              </span>
+            ) : done ? (
               <span class="rounded-full bg-emerald-100/70 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
                 Already posted
               </span>
@@ -95,6 +105,14 @@ function CompanyRows({
                 Ready
               </span>
             )}
+            {c.action === "replace" && !done ? (
+              <span
+                class="rounded-full bg-amber-100/80 px-2.5 py-0.5 text-xs font-semibold text-amber-800 ring-1 ring-inset ring-amber-200"
+                title="The draft run from the earlier upload is deleted and made again from this timesheet"
+              >
+                Replaces the {c.existingRun?.status === "PENDING_APPROVAL" ? "pending" : "draft"} run
+              </span>
+            ) : null}
             {plan ? (
               <span class="text-xs text-muted">
                 {plan.employees.length} employee{plan.employees.length === 1 ? "" : "s"} ·{" "}
@@ -166,6 +184,7 @@ export function ImportReviewPage({
 }) {
   const importId = plan.imp.record.id
   const label = periodLabel(plan.imp.period)
+  const effectiveFrom = salaryEffectiveDate(plan.imp.period)
   const catLabel = new Map(categories.map((c) => [c.code, c.label]))
 
   // Only mapped columns that carry money somewhere get a column.
@@ -178,7 +197,10 @@ export function ImportReviewPage({
     plan.companies.some((c) => c.plan?.employees.some((e) => amountFor(e, col.key))),
   )
 
-  const toPost = plan.companies.filter((c) => c.posted?.status !== "POSTED")
+  const toPost = plan.companies.filter(
+    (c) => c.posted?.status !== "POSTED" && c.action !== "approved",
+  )
+  const replacing = toPost.filter((c) => c.action === "replace").length
   const people = toPost.reduce((s, c) => s + (c.plan?.employees.length ?? 0), 0)
   const changes = toPost.reduce(
     (s, c) => s + (c.plan?.employees.filter((e) => e.newSalary != null).length ?? 0),
@@ -194,8 +216,10 @@ export function ImportReviewPage({
         <h1 class="text-2xl font-extrabold tracking-tight text-ink">Review — {label}</h1>
         <p class="mt-1.5 text-sm text-muted">
           This is exactly what ABPay will send to AltomateHR. Basic shows the salary change where
-          the timesheet differs from AltomateHR; each other column is posted as the pay item under
-          its name. Total Gross is the timesheet&apos;s own figure, for comparison.
+          the timesheet differs from AltomateHR — the timesheet wins, and each change is recorded
+          in the person&apos;s salary history from {effectiveFrom}. Each other column is posted as
+          the pay item under its name. Total Gross is the timesheet&apos;s own figure, for
+          comparison.
         </p>
       </div>
 
@@ -209,6 +233,9 @@ export function ImportReviewPage({
               {changes} salary change{changes === 1 ? "" : "s"}. Each company gets a{" "}
               <strong>draft</strong> {label} run with payroll already run — review and submit
               them in AltomateHR.
+              {replacing > 0
+                ? ` ${replacing} compan${replacing === 1 ? "y's" : "ies'"} earlier ${label} draft is deleted and made again from this timesheet.`
+                : ""}
             </p>
           </div>
           <form method="post" action={`/imports/${importId}/post`}>
