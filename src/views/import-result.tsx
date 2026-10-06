@@ -107,6 +107,14 @@ export function ImportResultPage({
                       {c.run?.error ? (
                         <div class="mt-1 text-xs font-medium text-red-700">{c.run.error}</div>
                       ) : null}
+                      {s?.finalFigures ? (
+                        <div class="mt-1 text-xs text-emerald-700">
+                          AltomateHR run set to use ABPay figures as final
+                        </div>
+                      ) : null}
+                      {s?.warnings?.map((w) => (
+                        <div class="mt-1 text-xs font-medium text-amber-700">{w}</div>
+                      ))}
                       {s?.skipped.length ? (
                         <div class="mt-1 text-xs text-amber-700">
                           Skipped by AltomateHR:{" "}

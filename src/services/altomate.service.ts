@@ -185,6 +185,11 @@ export type AltomatePayrollRun = {
   generatedAt: string | null
   submittedAt: string | null
   createdAt: string
+  /**
+   * AltomateHR pays the figures as sent, without prorating part-month staff.
+   * Null from an AltomateHR that doesn't have the flag yet.
+   */
+  skipProration: boolean | null
 }
 
 /**
@@ -206,6 +211,7 @@ export async function listPayrollRuns(token: string): Promise<AltomatePayrollRun
       generatedAt?: string | null
       submittedAt?: string | null
       createdAt: string
+      skipProration?: boolean
     }>
   >(token, "/payroll/runs", "Token can't read payroll runs (missing payroll:read scope).")
   return data.map((r) => ({
@@ -220,6 +226,7 @@ export async function listPayrollRuns(token: string): Promise<AltomatePayrollRun
     generatedAt: r.generatedAt ?? null,
     submittedAt: r.submittedAt ?? null,
     createdAt: r.createdAt,
+    skipProration: r.skipProration ?? null,
   }))
 }
 
@@ -436,18 +443,62 @@ export type AltomateRunDetail = {
   totalGross: number
   totalNet: number
   totalCostToEmployer: number
+  /** Missing from an AltomateHR that doesn't have the flag yet. */
+  skipProration?: boolean
+  /** True when the run changed after payroll was run and must be run again. */
+  isStale?: boolean
 }
 
 /**
  * Create the month's DRAFT run. `excludedEmployeeProfileIds` keeps people
- * who aren't on the timesheet out of it. A run that already exists for the
- * month is a 409 → `AltomateApiError("conflict")`.
+ * who aren't on the timesheet out of it. `skipProration` is always on:
+ * ABPay's figures are final (part-month staff are already prorated on the
+ * timesheet), so AltomateHR mustn't prorate them again. An AltomateHR that
+ * doesn't have the flag yet ignores it — `setRunSkipProration` then tells.
+ * A run that already exists for the month is a 409 →
+ * `AltomateApiError("conflict")`.
  */
 export async function createPayrollRun(
   token: string,
   input: { periodYear: number; periodMonth: number; excludedEmployeeProfileIds: string[] },
 ): Promise<AltomateRunDetail> {
-  return altomateSend<AltomateRunDetail>(token, "POST", "/payroll/runs", input)
+  return altomateSend<AltomateRunDetail>(token, "POST", "/payroll/runs", {
+    ...input,
+    skipProration: true,
+  })
+}
+
+/**
+ * Turn on `skipProration` for an existing DRAFT run (PATCH). "unsupported"
+ * when AltomateHR doesn't have the flag yet (the PATCH route answers 404 or
+ * 405). A run that isn't a draft any more is a 409 →
+ * `AltomateApiError("conflict")` with AltomateHR's message.
+ */
+export async function setRunSkipProration(
+  token: string,
+  runId: string,
+): Promise<"set" | "unsupported"> {
+  let res: Response
+  try {
+    res = await altomateFetch(token, `/payroll/runs/${encodeURIComponent(runId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ skipProration: true }),
+    })
+  } catch {
+    throw new AltomateApiError("down", "Couldn't reach AltomateHR.")
+  }
+  if (res.ok) return "set"
+  if (res.status === 404 || res.status === 405) return "unsupported"
+  const message =
+    describeError(await res.json().catch(() => null)) ||
+    `AltomateHR PATCH /payroll/runs/${runId} returned ${res.status}.`
+  if (res.status === 401) {
+    throw new AltomateApiError("auth", "Token was rejected — reconnect this company.")
+  }
+  if (res.status === 403) throw new AltomateApiError("scope", message)
+  if (res.status === 409) throw new AltomateApiError("conflict", message)
+  if (res.status === 400) throw new AltomateApiError("invalid", message)
+  throw new AltomateApiError("down", message)
 }
 
 /**

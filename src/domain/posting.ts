@@ -198,7 +198,7 @@ export function planCompany(input: {
 
     if (inPeriod(profile.joinDate, period) || inPeriod(profile.leaveDate, period)) {
       warnings.push(
-        `${who} ${inPeriod(profile.joinDate, period) ? "joined" : "leaves"} this month: AltomateHR prorates the salary by date, so the Basic should be the full-month rate.`,
+        `${who} ${inPeriod(profile.joinDate, period) ? "joined" : "leaves"} this month: ABPay's figures are final (AltomateHR won't prorate them), so Basic and allowances should already be the part-month amounts.`,
       )
     }
 

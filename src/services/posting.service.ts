@@ -30,7 +30,9 @@ import {
   listPayrollEmployees,
   listPayrollRuns,
   saveRunAdjustment,
+  setRunSkipProration,
   type AltomatePayrollRun,
+  type AltomateRunDetail,
   type AltomateAdjustmentCategory,
 } from "./altomate.service"
 import { validateTimesheet } from "./validate.service"
@@ -226,6 +228,35 @@ export type PostedRunSummary = {
   totalGross: number
   totalNet: number
   totalCostToEmployer: number
+  /**
+   * AltomateHR's run uses ABPay's figures as final (skipProration). Missing
+   * on runs posted before ABPay set it.
+   */
+  finalFigures?: boolean
+  /** Things to check in AltomateHR, said on the result page. */
+  warnings?: string[]
+}
+
+/** Said when AltomateHR doesn't have `skipProration` yet. */
+export const PRORATION_UNSUPPORTED =
+  "AltomateHR does not support skipProration yet — part-month staff may be prorated twice."
+
+/**
+ * Make sure a run uses ABPay's figures as final before payroll is run.
+ * ABPay's figures already prorate part-month staff, so AltomateHR must not
+ * prorate them again. A run created with the flag already has it; otherwise
+ * it's set now. Returns a warning when this AltomateHR doesn't have the flag
+ * yet (the import carries on); a run that isn't a draft any more throws
+ * AltomateHR's 409, which stops the company without generating anything.
+ */
+export async function makeFiguresFinal(
+  run: Pick<AltomateRunDetail, "id" | "skipProration">,
+  setFlag: (runId: string) => Promise<"set" | "unsupported">,
+): Promise<string | null> {
+  if (run.skipProration === true) return null
+  if ((await setFlag(run.id)) === "set") return null
+  console.warn(`[abpay] ${PRORATION_UNSUPPORTED} (run ${run.id})`)
+  return PRORATION_UNSUPPORTED
 }
 
 export type PostOutcome =
@@ -236,8 +267,10 @@ export type PostOutcome =
  * Post the month to AltomateHR, company by company:
  *   1. new basic salaries (salary-change import, recorded in history),
  *   2. create the month's DRAFT run, leaving out anyone not on the timesheet,
- *   3. save each person's pay lines as their run adjustment,
- *   4. run payroll (EPF, SOCSO, EIS, PCB are computed by AltomateHR).
+ *   3. make sure the run uses ABPay's figures as final (skipProration), so
+ *      part-month staff aren't prorated again,
+ *   4. save each person's pay lines as their run adjustment,
+ *   5. run payroll (EPF, SOCSO, EIS, PCB are computed by AltomateHR).
  * Runs stay DRAFT: the admin reviews and submits them in AltomateHR.
  *
  * A company whose month is already approved in AltomateHR is left alone.
@@ -309,13 +342,14 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
         if (c.action === "replace" && c.existingRun) {
           await deletePayrollRun(token, c.existingRun.id)
         }
+        let created: AltomateRunDetail
         try {
-          const run = await createPayrollRun(token, {
+          created = await createPayrollRun(token, {
             periodYear: plan.imp.period.year,
             periodMonth: plan.imp.period.month,
             excludedEmployeeProfileIds: companyPlan.excluded.map((e) => e.employeeProfileId),
           })
-          runId = run.id
+          runId = created.id
         } catch (err) {
           if (err instanceof AltomateApiError && err.code === "conflict") {
             throw new AltomateApiError(
@@ -328,7 +362,13 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
         // Remember it straight away: a crash after this must not create a second run.
         await recordRun({ importId, companyCode: c.code, altomateRunId: runId, status: "POSTING" })
 
-        // 3. Each person's pay lines (PUT replaces, so a retry is idempotent).
+        // 3. ABPay's figures are final — before payroll is run, or AltomateHR
+        //    prorates part-month staff a second time.
+        const warnings: string[] = []
+        const flagWarning = await makeFiguresFinal(created, (id) => setRunSkipProration(token, id))
+        if (flagWarning) warnings.push(flagWarning)
+
+        // 4. Each person's pay lines (PUT replaces, so a retry is idempotent).
         for (const e of companyPlan.employees) {
           await saveRunAdjustment(token, runId, e.employeeProfileId, {
             manualLineItems: e.lines.map((l) => ({
@@ -341,8 +381,17 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
           })
         }
 
-        // 4. Run payroll.
+        // 5. Run payroll, then check AltomateHR kept ABPay's figures as final.
         const result = await generatePayrollRun(token, runId)
+        const finalFigures = result.run.skipProration === true
+        if (!finalFigures && !flagWarning) {
+          warnings.push(
+            "AltomateHR's run doesn't show skipProration after payroll was run — check part-month staff weren't prorated twice.",
+          )
+        }
+        if (result.run.isStale) {
+          warnings.push("AltomateHR marks this run as out of date — run payroll again there before submitting.")
+        }
         const summary: PostedRunSummary = {
           payslipCount: result.payslipCount,
           employees: companyPlan.employees.length,
@@ -352,6 +401,8 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
           totalGross: result.run.totalGross,
           totalNet: result.run.totalNet,
           totalCostToEmployer: result.run.totalCostToEmployer,
+          finalFigures,
+          warnings,
         }
         await recordRun({
           importId,
