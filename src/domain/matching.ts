@@ -25,6 +25,8 @@ export type EmployeeMatch = {
   altomateName: string | null
   /** How it matched, for the preview. */
   method: "code" | "name" | null
+  /** Why it didn't match, when there's more to say than "not found". */
+  reason?: string
 }
 
 export type MatchableEmployee = {
@@ -57,6 +59,32 @@ export function matchEmployee(
       (e) => e.employeeId && e.employeeId.toUpperCase() === code,
     )
     if (byCode) {
+      // The code is someone's, but the name on the row is exactly someone
+      // ELSE's — e.g. a duplicate written with the other company's number
+      // ("AB111) Yasmin" where AB111 is Bella here and Yasmin is AB111-T).
+      // Matching by code would pay the wrong person, so neither is guessed.
+      // Only that case: the other person's code is this one with a suffix.
+      // An unrelated namesake (say, a former employee called just "Siti")
+      // says nothing about whether the code is wrong.
+      const target = normalizeName(line.name)
+      if (target && normalizeName(byCode.name) !== target) {
+        const others = employees.filter(
+          (e) =>
+            e.id !== byCode.id &&
+            normalizeName(e.name) === target &&
+            !!e.employeeId &&
+            e.employeeId.toUpperCase().startsWith(`${code}-`),
+        )
+        if (others.length > 0) {
+          const other = others[0]!
+          return {
+            ...miss,
+            reason: `${code} is ${byCode.name} in AltomateHR, but ${other.name} is ${
+              other.employeeId || "without a staff number"
+            } — fix the staff code on the timesheet.`,
+          }
+        }
+      }
       return {
         matched: true,
         altomateId: byCode.id,

@@ -1,3 +1,4 @@
+import { normalizeName } from "../domain/matching"
 import { periodLabel, type Period } from "../lib/period"
 import type { ParsedTimesheet } from "../domain/timesheet"
 import type {
@@ -137,6 +138,11 @@ function CompanyRows({ c }: { c: CompanyValidation }) {
             {e.outlets.length > 1 ? (
               <span class="ml-1.5 text-[11px] text-muted">[{e.outlets.join("+")}]</span>
             ) : null}
+            {/* Whoever the row really matched, when the sheet calls them something else. */}
+            {e.match.altomateName && normalizeName(e.match.altomateName) !== normalizeName(e.name) ? (
+              <div class="text-[11px] font-semibold text-amber-700">→ {e.match.altomateName} in AltomateHR</div>
+            ) : null}
+            {e.match.reason ? <div class="text-[11px] font-semibold text-red-700">{e.match.reason}</div> : null}
           </td>
           <td class={CELL}>
             {e.match.matched ? (

@@ -69,6 +69,8 @@ export type PlanPayrollEmployee = {
   joinDate: string | null
   leaveDate: string | null
   isArchived: boolean
+  /** AltomateHR's last payable day (leave date, else archived date). */
+  lastPayableDay?: string | null
   notPayableReason: string | null
   hasPayrollProfile: boolean
   profileIncompleteSections: string[]
@@ -109,6 +111,8 @@ export function partLabel(part: { outlet: string; group: string }): string | nul
 
 export type EmployeePlan = {
   name: string
+  /** The AltomateHR person the row matched — shown when it isn't the sheet's name. */
+  altomateName: string
   code: string | null
   employeeProfileId: string
   email: string
@@ -136,6 +140,36 @@ function round2(n: number): number {
 
 function money(n: number): string {
   return n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+/** "2026-10-13…" → "13/10". */
+function dayMonth(iso: string): string {
+  return `${iso.slice(8, 10)}/${iso.slice(5, 7)}`
+}
+
+/**
+ * Archived, but their last day is in this payroll month or later — someone
+ * who left (or transferred out) during the month. AltomateHR still puts them
+ * in the month's run, so ABPay treats them like anyone else on the roster:
+ * paid what the timesheet says, or left out when they aren't on it.
+ */
+export function leftDuringOrAfter(
+  p: Pick<PlanPayrollEmployee, "isArchived" | "leaveDate" | "lastPayableDay">,
+  period: { year: number; month: number },
+): boolean {
+  const last = lastDay(p)
+  if (!p.isArchived || !last) return false
+  const first = `${period.year}-${String(period.month).padStart(2, "0")}-01`
+  return last.slice(0, 10) >= first
+}
+
+/**
+ * The day AltomateHR stops paying them. Its own rule — the leave date, or,
+ * archived without one, the day they were archived — so someone archived
+ * mid-month with no Last day set is still caught.
+ */
+export function lastDay(p: Pick<PlanPayrollEmployee, "leaveDate" | "lastPayableDay">): string | null {
+  return p.lastPayableDay ?? p.leaveDate ?? null
 }
 
 /** "2026-09-15..." falls inside the period? */
@@ -195,11 +229,18 @@ export function planCompany(input: {
       problems.push(`${who} has no payroll profile in AltomateHR — set one up first.`)
       continue
     }
-    if (profile.isArchived) {
-      problems.push(`${who} is archived in AltomateHR.`)
+    const leaver = leftDuringOrAfter(profile, period)
+    if (profile.isArchived && !leaver) {
+      const last = lastDay(profile)
+      problems.push(
+        last
+          ? `${who} left on ${dayMonth(last)} and is archived in AltomateHR — take them off this company's rows.`
+          : `${who} is archived in AltomateHR — restore them there, or take them off this company's rows.`,
+      )
       continue
     }
-    if (profile.notPayableReason) {
+    // An in-month leaver reads "Archived" here; that's covered above.
+    if (profile.notPayableReason && !leaver) {
       problems.push(`${who} can't be paid in AltomateHR yet: ${profile.notPayableReason}`)
       continue
     }
@@ -228,7 +269,7 @@ export function planCompany(input: {
     const current = profile.monthlySalary
     const newSalary = current != null && round2(current) === basic ? null : basic
 
-    if (inPeriod(profile.joinDate, period) || inPeriod(profile.leaveDate, period)) {
+    if (inPeriod(profile.joinDate, period) || inPeriod(lastDay(profile), period)) {
       warnings.push(
         `${who} ${inPeriod(profile.joinDate, period) ? "joined" : "leaves"} this month: ABPay's figures are final (AltomateHR won't prorate them), so Basic and allowances should already be the part-month amounts.`,
       )
@@ -301,6 +342,7 @@ export function planCompany(input: {
 
     employees.push({
       name: line.name,
+      altomateName: profile.name,
       code: line.code,
       employeeProfileId: profile.employeeProfileId,
       email: profile.email,
@@ -313,14 +355,26 @@ export function planCompany(input: {
 
   const posted = new Set(employees.map((e) => e.employeeProfileId))
   const matchedUsers = new Set(seen.keys())
-  const excluded = input.payrollEmployees
-    .filter(
-      (p) =>
-        p.hasPayrollProfile &&
-        !p.isArchived &&
-        !posted.has(p.employeeProfileId) &&
-        !matchedUsers.has(p.userId),
-    )
+  // Everyone AltomateHR would put in this month's run but who isn't on the
+  // timesheet — including anyone who left during the month (a transfer
+  // archives them in the old company, yet AltomateHR still pays their last
+  // days, and with ABPay's figures final it would pay a FULL month).
+  const notOnSheet = input.payrollEmployees.filter(
+    (p) =>
+      p.hasPayrollProfile &&
+      (!p.isArchived || leftDuringOrAfter(p, period)) &&
+      !posted.has(p.employeeProfileId) &&
+      !matchedUsers.has(p.userId),
+  )
+  for (const p of notOnSheet) {
+    const last = lastDay(p)
+    if (p.isArchived && last && inPeriod(last, period)) {
+      warnings.push(
+        `${p.name} left on ${dayMonth(last)} and isn't on this company's rows, so ABPay leaves them out of this run — their last days here won't be paid unless you add them to the timesheet.`,
+      )
+    }
+  }
+  const excluded = notOnSheet
     .map((p) => ({ employeeProfileId: p.employeeProfileId, name: p.name }))
     .sort((a, b) => a.name.localeCompare(b.name))
 
@@ -352,7 +406,8 @@ export type ExistingRun = {
  * What posting `period` does with a company's runs. `ownRunId` is the run
  * an earlier upload of this month made (from ABPay's records), if any.
  *   - the month is approved (SUBMITTED) → "approved": left alone;
- *   - the month has ABPay's draft / pending run → "replace" it;
+ *   - the month has ABPay's draft run → "replace" it (one awaiting approval
+ *     must go back to draft in AltomateHR first — it's flagged as a problem);
  *   - no run for the month → "create" one.
  * Plus what stops it: a later month already run, a run for the month that
  * ABPay didn't make, or an earlier month not approved yet.
@@ -375,6 +430,12 @@ export function decideRun<R extends ExistingRun>(
   if (later) {
     problems.push(
       `AltomateHR already has a ${periodLabel(of(later))} run, so ${label} can't be posted any more.`,
+    )
+  }
+  if (same && same.id === ownRunId && same.status === "PENDING_APPROVAL") {
+    // AltomateHR only deletes a draft, so posting would fail at the delete.
+    problems.push(
+      `${label} is awaiting approval in AltomateHR, so ABPay can't replace it — send it back to draft there (or approve it as it is), then reload this page.`,
     )
   }
   if (same && same.id !== ownRunId) {

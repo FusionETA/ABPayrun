@@ -427,6 +427,10 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
       const token = tokenOf(company)!
       const companyPlan = c.plan!
       let runId: string | null = null
+      // Whether the earlier draft (ABPay's own) is gone yet. Until it is, a
+      // failure must keep its id: forgetting it would make every later review
+      // treat ABPay's own draft as "a run ABPay didn't make".
+      let oldDraftDeleted = false
 
       try {
         // 1. Salaries first, so the run is generated on the new figures.
@@ -451,6 +455,7 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
         // 2. The month's run — a draft an earlier upload made is replaced.
         if (c.action === "replace" && c.existingRun) {
           await deletePayrollRun(token, c.existingRun.id)
+          oldDraftDeleted = true
         }
         let created: AltomateRunDetail
         try {
@@ -530,7 +535,9 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
         await recordRun({
           importId,
           companyCode: c.code,
-          altomateRunId: runId,
+          // The new run if it was made; otherwise the old draft, if it's still there.
+          altomateRunId:
+            runId ?? (c.action === "replace" && !oldDraftDeleted ? (c.existingRun?.id ?? null) : null),
           status: "FAILED",
           error: describe(err, "Something went wrong posting this company."),
         })
