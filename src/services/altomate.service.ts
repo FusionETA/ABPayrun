@@ -379,6 +379,12 @@ export type AltomatePayrollEmployee = {
   joinDate: string | null
   leaveDate: string | null
   isArchived: boolean
+  /**
+   * The last day AltomateHR pays them: the leave date, or — archived with
+   * none — the day they were archived. Null while employed. Missing on an
+   * older AltomateHR.
+   */
+  lastPayableDay?: string | null
   notPayableReason: string | null
   /** False for a member with no payroll profile yet (its profile id is a placeholder). */
   hasPayrollProfile: boolean
@@ -389,8 +395,18 @@ export type AltomatePayrollEmployee = {
   profileIncompleteSections: string[]
 }
 
+/**
+ * The roster INCLUDING archived people: someone who left (or transferred out)
+ * during the payroll month is archived but still paid for their last days, so
+ * posting and transfer detection need them. Older leavers are filtered out
+ * by the caller, by leave date.
+ */
 export async function listPayrollEmployees(token: string): Promise<AltomatePayrollEmployee[]> {
-  const rows = await altomateSend<AltomatePayrollEmployee[]>(token, "GET", "/payroll/employees")
+  const rows = await altomateSend<AltomatePayrollEmployee[]>(
+    token,
+    "GET",
+    "/payroll/employees?includeArchived=true",
+  )
   return rows.map((r) => ({
     employeeProfileId: r.employeeProfileId,
     userId: r.userId,
@@ -402,6 +418,7 @@ export async function listPayrollEmployees(token: string): Promise<AltomatePayro
     joinDate: r.joinDate ?? null,
     leaveDate: r.leaveDate ?? null,
     isArchived: r.isArchived,
+    lastPayableDay: r.lastPayableDay ?? null,
     notPayableReason: r.notPayableReason ?? null,
     hasPayrollProfile: r.hasPayrollProfile ?? true,
     profileIncompleteSections: r.profileIncompleteSections ?? [],

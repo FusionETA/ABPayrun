@@ -384,8 +384,9 @@ function ReimportPicker({ month, companies }: { month: Period; companies: Compan
       </div>
       <p class="mt-3 border-t border-white/50 pt-3 text-xs text-muted">
         {label} isn&apos;t approved yet for {open.map((v) => v.company.name).join(", ")}, so you can
-        upload it again to make changes: posting replaces the draft runs ABPay made for {label}.
-        Companies already approved for {label} are left as they are.{" "}
+        upload it again to make changes: posting replaces the draft runs ABPay made for {label}. A
+        run awaiting approval has to be sent back to draft in AltomateHR first. Companies already
+        approved for {label} are left as they are.{" "}
         {periodLabel(addMonths(month, 1))} opens once every company&apos;s {label} run is approved
         in AltomateHR.
       </p>

@@ -1,3 +1,5 @@
+import { normalizeName } from "./matching"
+
 /**
  * Ayu Borneo monthly timesheet — parse + normalize.
  *
@@ -115,7 +117,9 @@ const HEADER_FIELDS = {
 
 type FieldKey = keyof typeof HEADER_FIELDS
 
-const STAFF_CODE_RE = /^\s*([A-Za-z]{1,6}\d+)\)\s*(.*)$/
+// A staff code may carry a suffix: AltomateHR's Duplicate gives "AB111-T" when
+// AB111 is already taken in the other company.
+const STAFF_CODE_RE = /^\s*([A-Za-z]{1,6}\d+(?:-[A-Za-z0-9]{1,4})?)\)\s*(.*)$/
 
 function normHeader(v: unknown): string {
   return String(v ?? "").trim().toLowerCase()
@@ -131,7 +135,7 @@ function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100
 }
 
-/** Split "AL426) Ivy" → { code: "AL426", name: "Ivy" }. No code → name only. */
+/** Split "AL426) Ivy" → { code: "AL426", name: "Ivy" } ("AB111-T) Yasmin" works too). No code → name only. */
 export function parseStaff(raw: string): { code: string | null; name: string } {
   const m = STAFF_CODE_RE.exec(raw)
   if (m && m[2] && m[2].trim()) {
@@ -273,7 +277,25 @@ export function normalizeTimesheet(
     dataRows++
 
     const { code, name } = parseStaff(staffRaw)
-    const key = code ?? name.toLowerCase()
+    // One person's rows merge by code when one name is the other written
+    // shorter ("AL426) Ivy" and "AL426) Ivy Tan": every word of one is in the
+    // other). Any other difference — two people written with one code, e.g.
+    // a duplicate given the other company's number, even when they share a
+    // word like "binti" or "Muhammad" — stays a separate line, so matching
+    // flags it (or both lines match one person and posting is blocked)
+    // instead of one person silently getting both rows' pay.
+    let key = code ? code : name.toLowerCase()
+    if (code) {
+      const words = new Set(normalizeName(name).split(" ").filter(Boolean))
+      const compMapForCode = byCompany.get(company)
+      const sameCode = compMapForCode ? [...compMapForCode.entries()].filter(([k]) => k === code || k.startsWith(`${code}|`)) : []
+      const related = sameCode.find(([, l]) => {
+        const other = normalizeName(l.name).split(" ").filter(Boolean)
+        const otherSet = new Set(other)
+        return other.every((w) => words.has(w)) || [...words].every((w) => otherSet.has(w))
+      })
+      key = related ? related[0] : sameCode.length === 0 ? code : `${code}|${normalizeName(name)}`
+    }
     const outlet = String(cell(row, "outlet") ?? "").trim()
     const group = String(cell(row, "group") ?? "").trim()
 

@@ -1,3 +1,4 @@
+import { normalizeName } from "../domain/matching"
 import {
   MAPPABLE_COLUMNS,
   salaryEffectiveDate,
@@ -119,9 +120,15 @@ function CompanyRows({
             {c.action === "replace" && !done ? (
               <span
                 class="rounded-full bg-amber-100/80 px-2.5 py-0.5 text-xs font-semibold text-amber-800 ring-1 ring-inset ring-amber-200"
-                title="The draft run from the earlier upload is deleted and made again from this timesheet"
+                title={
+                  c.existingRun?.status === "PENDING_APPROVAL"
+                    ? "Send it back to draft in AltomateHR first — only a draft run can be replaced"
+                    : "The draft run from the earlier upload is deleted and made again from this timesheet"
+                }
               >
-                Replaces the {c.existingRun?.status === "PENDING_APPROVAL" ? "pending" : "draft"} run
+                {c.existingRun?.status === "PENDING_APPROVAL"
+                  ? "Awaiting approval — send back to draft first"
+                  : "Replaces the draft run"}
               </span>
             ) : null}
             {plan ? (
@@ -177,6 +184,9 @@ function CompanyRows({
           <td class={`${CELL} pl-9`}>
             <span class="font-semibold text-ink">{e.name}</span>
             {e.code ? <span class="ml-1.5 text-[11px] text-muted">{e.code}</span> : null}
+            {e.altomateName && normalizeName(e.altomateName) !== normalizeName(e.name) ? (
+              <div class="text-[11px] font-semibold text-amber-700">→ {e.altomateName} in AltomateHR</div>
+            ) : null}
           </td>
           <td class={NUM}>
             <BasicCell e={e} />
