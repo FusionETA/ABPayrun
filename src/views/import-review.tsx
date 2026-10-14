@@ -4,7 +4,8 @@ import {
   type EmployeePlan,
   type MappableKey,
 } from "../domain/posting"
-import { periodLabel } from "../lib/period"
+import { waitingMessage } from "../domain/transfers"
+import { periodLabel, type Period } from "../lib/period"
 import type { AltomateAdjustmentCategory } from "../services/altomate.service"
 import type { CompanyPostingPlan, PostingPlan } from "../services/posting.service"
 
@@ -36,8 +37,11 @@ function ChevronIcon({ open }: { open: boolean }) {
   )
 }
 
+/** A column's rows for one person (one per outlet / group), or null if none. */
 function amountFor(e: EmployeePlan, key: MappableKey) {
-  return e.lines.find((l) => l.column === key)
+  const rows = e.lines.filter((l) => l.column === key)
+  if (rows.length === 0) return null
+  return { kind: rows[0]!.kind, amount: rows.reduce((s, l) => s + l.amount, 0), rows }
 }
 
 function BasicCell({ e }: { e: EmployeePlan }) {
@@ -57,15 +61,18 @@ function BasicCell({ e }: { e: EmployeePlan }) {
 function CompanyRows({
   c,
   columns,
+  period,
 }: {
   c: CompanyPostingPlan
   columns: { key: MappableKey; label: string; category: string }[]
+  period: Period
 }) {
   const span = columns.length + 3
   const group = `review-${c.code}`
   const plan = c.plan
   const done = c.posted?.status === "POSTED"
   const approved = c.action === "approved"
+  const waiting = c.action === "waiting"
   const problems = approved ? [] : (plan?.problems ?? [])
   const open = !done && (problems.length > 0 || !!c.error)
   const changes = plan?.employees.filter((e) => e.newSalary != null).length ?? 0
@@ -91,6 +98,10 @@ function CompanyRows({
             {approved ? (
               <span class="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600 ring-1 ring-inset ring-slate-200">
                 Approved in AltomateHR — left as is
+              </span>
+            ) : waiting && !(c.error || problems.length) ? (
+              <span class="rounded-full bg-sky-100/80 px-2.5 py-0.5 text-xs font-semibold text-sky-800 ring-1 ring-inset ring-sky-200">
+                Step {c.step} — waits for {c.waitingFor.map((w) => w.fromName).join(", ")}
               </span>
             ) : done ? (
               <span class="rounded-full bg-emerald-100/70 px-2.5 py-0.5 text-xs font-semibold text-emerald-700 ring-1 ring-inset ring-emerald-200">
@@ -122,6 +133,13 @@ function CompanyRows({
             ) : null}
           </div>
           {c.error ? <p class="mt-1 text-xs font-medium text-red-700">{c.error}</p> : null}
+          {waiting ? (
+            <ul class="mt-1.5 space-y-0.5">
+              {c.waitingFor.map((w) => (
+                <li class="text-xs text-sky-800">• {waitingMessage(w, period)}</li>
+              ))}
+            </ul>
+          ) : null}
           {problems.length && !done ? (
             <ul class="mt-1.5 space-y-0.5">
               {problems.map((p) => (
@@ -137,10 +155,20 @@ function CompanyRows({
             </ul>
           ) : null}
           {plan?.excluded.length ? (
-            <p class="mt-1.5 text-xs text-muted">
-              Not on the timesheet, so left out of this run:{" "}
-              {plan.excluded.map((e) => e.name).join(", ")}
-            </p>
+            <details class="group mt-2">
+              <summary class="inline-flex cursor-pointer list-none items-center gap-1.5 rounded-lg px-1.5 py-1 text-xs font-semibold text-muted transition hover:bg-brand/5 hover:text-brand [&::-webkit-details-marker]:hidden">
+                <span class="transition group-open:rotate-90">
+                  <ChevronIcon open={false} />
+                </span>
+                {plan.excluded.length} {plan.excluded.length === 1 ? "person" : "people"} not on
+                the timesheet — left out of this run
+              </summary>
+              <ul class="mt-1.5 grid max-h-60 grid-cols-1 gap-x-6 overflow-y-auto rounded-xl border border-slate-200/70 bg-white/70 px-4 py-3 text-[11px] text-ink/80 sm:grid-cols-2 lg:grid-cols-3">
+                {plan.excluded.map((e) => (
+                  <li class="truncate py-0.5" title={e.name}>{e.name}</li>
+                ))}
+              </ul>
+            </details>
           ) : null}
         </td>
       </tr>
@@ -160,6 +188,17 @@ function CompanyRows({
               <td class={`${NUM} ${line.kind === "DEDUCTION" ? "text-red-700" : "text-ink"}`}>
                 {line.kind === "DEDUCTION" ? "−" : ""}
                 {money(line.amount)}
+                {/* Posted as one row per outlet / group — show what each is. */}
+                {line.rows.some((r) => r.breakdown || r.hours) ? (
+                  <ul class="mt-0.5 space-y-0.5 text-[11px] font-normal text-muted">
+                    {line.rows.map((r) => (
+                      <li class="whitespace-nowrap">
+                        {r.breakdown ?? "—"}
+                        {r.hours ? ` · ${Number(r.hours.toFixed(2))} hrs` : ""} · {money(r.amount)}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
               </td>
             )
           })}
@@ -198,8 +237,9 @@ export function ImportReviewPage({
   )
 
   const toPost = plan.companies.filter(
-    (c) => c.posted?.status !== "POSTED" && c.action !== "approved",
+    (c) => c.posted?.status !== "POSTED" && c.action !== "approved" && c.action !== "waiting",
   )
+  const held = plan.companies.filter((c) => c.action === "waiting")
   const replacing = toPost.filter((c) => c.action === "replace").length
   const people = toPost.reduce((s, c) => s + (c.plan?.employees.length ?? 0), 0)
   const changes = toPost.reduce(
@@ -218,7 +258,8 @@ export function ImportReviewPage({
           This is exactly what ABPay will send to AltomateHR. Basic shows the salary change where
           the timesheet differs from AltomateHR — the timesheet wins, and each change is recorded
           in the person&apos;s salary history from {effectiveFrom}. Each other column is posted as
-          the pay item under its name. Total Gross is the timesheet&apos;s own figure, for
+          the pay item under its name — one row per outlet and group, e.g. &ldquo;Travelling (MA2 / KT)&rdquo;,
+          listed under the total. Total Gross is the timesheet&apos;s own figure, for
           comparison.
         </p>
       </div>
@@ -237,6 +278,13 @@ export function ImportReviewPage({
                 ? ` ${replacing} compan${replacing === 1 ? "y's" : "ies'"} earlier ${label} draft is deleted and made again from this timesheet.`
                 : ""}
             </p>
+            {held.length > 0 ? (
+              <p class="mt-2 text-sm text-sky-800">
+                {held.map((c) => c.companyName).join(", ")} {held.length === 1 ? "is" : "are"}{" "}
+                held for now — someone moved there from another company this month. Approve that
+                company&apos;s {label} run in AltomateHR, then come back here and post again.
+              </p>
+            ) : null}
           </div>
           <form method="post" action={`/imports/${importId}/post`}>
             <button
@@ -262,6 +310,38 @@ export function ImportReviewPage({
         </div>
       )}
 
+      {plan.transfers.length > 0 ? (
+        <div class="mb-6 rounded-3xl border border-sky-200/70 bg-sky-50/80 p-6">
+          <h2 class="text-base font-bold text-sky-900">Moved between companies in {label}</h2>
+          <p class="mt-1 text-sm text-sky-800">
+            The company someone moved FROM goes first: the new company&apos;s PCB counts what the
+            old one paid this year, and AltomateHR only carries that across once the old
+            company&apos;s {label} is approved. So ABPay posts in steps.
+          </p>
+          <ul class="mt-3 space-y-1">
+            {plan.transfers.map((t) => (
+              <li class="text-sm text-sky-900">
+                • <strong>{t.name}</strong>: {t.fromName} (last day {t.leaveDate.slice(8, 10)}/
+                {t.leaveDate.slice(5, 7)}) → {t.toName} (from {t.joinDate.slice(8, 10)}/
+                {t.joinDate.slice(5, 7)})
+              </li>
+            ))}
+          </ul>
+          <ol class="mt-3 space-y-1">
+            {[...new Set(plan.companies.map((c) => c.step))].map((step) => (
+              <li class="text-sm text-sky-900">
+                <strong>Step {step}:</strong>{" "}
+                {plan.companies
+                  .filter((c) => c.step === step)
+                  .map((c) => c.companyName)
+                  .join(", ")}
+                {step === 1 ? " — post now" : " — after the step before is approved in AltomateHR"}
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
+
       <div class="glass overflow-hidden rounded-3xl p-2">
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
@@ -282,7 +362,7 @@ export function ImportReviewPage({
             </thead>
             <tbody>
               {plan.companies.map((c) => (
-                <CompanyRows c={c} columns={used} />
+                <CompanyRows c={c} columns={used} period={plan.imp.period} />
               ))}
             </tbody>
           </table>

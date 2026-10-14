@@ -382,6 +382,11 @@ export type AltomatePayrollEmployee = {
   notPayableReason: string | null
   /** False for a member with no payroll profile yet (its profile id is a placeholder). */
   hasPayrollProfile: boolean
+  /**
+   * Profile sections still short ("Personal" / "Employment" / "Statutory").
+   * AltomateHR leaves an incomplete profile out of a run, so it gets no payslip.
+   */
+  profileIncompleteSections: string[]
 }
 
 export async function listPayrollEmployees(token: string): Promise<AltomatePayrollEmployee[]> {
@@ -399,6 +404,7 @@ export async function listPayrollEmployees(token: string): Promise<AltomatePayro
     isArchived: r.isArchived,
     notPayableReason: r.notPayableReason ?? null,
     hasPayrollProfile: r.hasPayrollProfile ?? true,
+    profileIncompleteSections: r.profileIncompleteSections ?? [],
   }))
 }
 

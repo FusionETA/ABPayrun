@@ -71,6 +71,7 @@ export type PlanPayrollEmployee = {
   isArchived: boolean
   notPayableReason: string | null
   hasPayrollProfile: boolean
+  profileIncompleteSections: string[]
 }
 
 export type PlanLine = {
@@ -81,6 +82,29 @@ export type PlanLine = {
   kind: PlanCategory["kind"]
   /** Positive; `kind` says whether it adds or deducts. */
   amount: number
+  /**
+   * The outlet / group this row came from, e.g. "MA2 / KT". Null for a
+   * column posted as one summed row.
+   */
+  breakdown: string | null
+  /**
+   * OT hours behind this row (from the timesheet's Hours column), shown on the
+   * row's label. Only on OT rows; null elsewhere or when the sheet has none.
+   * Never sent as AltomateHR's OT hours — those make AltomateHR price the OT
+   * itself, which would pay it twice on top of the timesheet amount.
+   */
+  hours: number | null
+}
+
+/** The adjustment row's label: "OT 12.5 hrs (MA2 / KT)", "Travelling (PM / FD)". */
+export function lineLabel(l: Pick<PlanLine, "columnLabel" | "breakdown" | "hours">): string {
+  const hours = l.hours ? ` ${Number(l.hours.toFixed(2))} hrs` : ""
+  return `${l.columnLabel}${hours}${l.breakdown ? ` (${l.breakdown})` : ""}`
+}
+
+/** "MA2 / KT" — the outlet and group a timesheet part came from. */
+export function partLabel(part: { outlet: string; group: string }): string | null {
+  return [part.outlet.trim(), part.group.trim()].filter(Boolean).join(" / ") || null
 }
 
 export type EmployeePlan = {
@@ -179,6 +203,14 @@ export function planCompany(input: {
       problems.push(`${who} can't be paid in AltomateHR yet: ${profile.notPayableReason}`)
       continue
     }
+    // AltomateHR only puts complete profiles in a run: an incomplete one would
+    // get no payslip, with no error, while its salary change still went in.
+    if (profile.profileIncompleteSections.length > 0) {
+      problems.push(
+        `${who} has an incomplete payroll profile in AltomateHR (${profile.profileIncompleteSections.join(", ")}) — finish it first.`,
+      )
+      continue
+    }
     if (profile.salaryType === "HOURLY") {
       problems.push(
         `${who} is paid hourly in AltomateHR; ABPay sets a monthly Basic. Change them to monthly first.`,
@@ -206,9 +238,42 @@ export function planCompany(input: {
     for (const col of MAPPABLE_COLUMNS) {
       const value = round2(line[col.key])
       const code = mapping[col.key]
-      if (!code || value === 0) continue
+      if (!code) continue
       const cat = categories.get(code)
       if (!cat) continue // reported above
+
+      // One row per outlet + group, as long as every row has the sign its
+      // column should have; their sum is the employee's total either way.
+      const parts = (line.parts ?? [])
+        .map((p) => ({ breakdown: partLabel(p), value: round2(p[col.key]), hours: round2(p.otHours) }))
+        .filter((p) => p.value !== 0)
+      const wrongSign = (v: number) =>
+        (cat.kind !== "DEDUCTION" && v < 0) || (col.key === "deduction" && v > 0)
+      const partsTotal = round2(parts.reduce((s, p) => s + p.value, 0))
+      if (parts.length > 0 && !parts.some((p) => wrongSign(p.value)) && partsTotal === value) {
+        for (const p of parts) {
+          lines.push({
+            column: col.key,
+            columnLabel: col.label,
+            category: code,
+            categoryLabel: cat.label,
+            kind: cat.kind,
+            amount: Math.abs(p.value),
+            breakdown: p.breakdown,
+            hours: col.key === "otAmount" && p.hours > 0 ? p.hours : null,
+          })
+        }
+        continue
+      }
+      if (parts.length > 1 && value !== 0) {
+        warnings.push(
+          `${who}: ${col.label} has rows of both signs across outlets, so it's posted as one summed row (${money(value)}).`,
+        )
+      }
+
+      // Fallback: one summed row (imports parsed before parts were kept, or
+      // rows whose signs don't agree).
+      if (value === 0) continue
       if (cat.kind !== "DEDUCTION" && value < 0) {
         problems.push(
           `${who}: ${col.label} is ${money(value)}, but it's mapped to an allowance. Map it to a deduction or fix the sheet.`,
@@ -229,6 +294,8 @@ export function planCompany(input: {
         categoryLabel: cat.label,
         kind: cat.kind,
         amount: Math.abs(value),
+        breakdown: null,
+        hours: col.key === "otAmount" && round2(line.otHours) > 0 ? round2(line.otHours) : null,
       })
     }
 

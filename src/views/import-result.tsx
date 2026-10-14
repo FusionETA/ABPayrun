@@ -19,6 +19,10 @@ const STATUS: Record<string, { label: string; cls: string }> = {
     label: "Already approved — left as is",
     cls: "bg-slate-100/70 text-slate-600 ring-slate-200",
   },
+  WAITING: {
+    label: "Held — post again later",
+    cls: "bg-sky-100/80 text-sky-800 ring-sky-200",
+  },
 }
 
 function summaryOf(run: PostedRun | undefined): PostedRunSummary | null {
@@ -64,6 +68,12 @@ export function ImportResultPage({
               {status === "POSTING" ? "Posting is still running" : "Not every company was posted"}
             </h2>
             <p class="mt-1 text-sm text-amber-700">
+              {companies.some((c) => c.run?.status === "WAITING") ? (
+                <>
+                  A company marked &quot;Held&quot; waits for the company someone moved from: approve
+                  that company&apos;s {label} run in AltomateHR, then post again here.{" "}
+                </>
+              ) : null}
               Posting stops at the first company that fails. Fix the error below, then post again
               — companies already done are skipped, and a draft run ABPay already made is replaced.
             </p>
@@ -105,7 +115,11 @@ export function ImportResultPage({
                         </span>
                       </div>
                       {c.run?.error ? (
-                        <div class="mt-1 text-xs font-medium text-red-700">{c.run.error}</div>
+                        <div
+                          class={`mt-1 text-xs font-medium ${c.run.status === "WAITING" ? "text-sky-800" : "text-red-700"}`}
+                        >
+                          {c.run.error}
+                        </div>
                       ) : null}
                       {s?.finalFigures ? (
                         <div class="mt-1 text-xs text-emerald-700">

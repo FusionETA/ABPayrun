@@ -2,12 +2,22 @@ import {
   MAPPABLE_COLUMNS,
   planCompany,
   decideRun,
+  lineLabel,
   resolveMapping,
   salaryEffectiveDate,
   type ColumnMapping,
   type CompanyPlan,
 } from "../domain/posting"
 import type { ParsedTimesheet } from "../domain/timesheet"
+import {
+  findTransfers,
+  postingSteps,
+  waitingFor,
+  waitingMessage,
+  type CompanyRoster,
+  type Transfer,
+  type Waiting,
+} from "../domain/transfers"
 import { decryptSecret } from "../lib/crypto"
 import { periodLabel, type Period } from "../lib/period"
 import { listCompanies, type CompanyRecord } from "../repositories/company.repository"
@@ -31,6 +41,7 @@ import {
   listPayrollRuns,
   saveRunAdjustment,
   setRunSkipProration,
+  type AltomatePayrollEmployee,
   type AltomatePayrollRun,
   type AltomateRunDetail,
   type AltomateAdjustmentCategory,
@@ -108,15 +119,28 @@ export type CompanyPostingPlan = {
    * earlier upload of this month made, or nothing — the month is already
    * approved for this company. Null when there's no plan.
    */
-  action: "create" | "replace" | "approved" | null
+  action: "create" | "replace" | "approved" | "waiting" | null
   /** The company's run for this month in AltomateHR, if it has one. */
   existingRun: AltomatePayrollRun | null
+  /**
+   * Set when action is "waiting": the companies someone moved from this
+   * month whose month isn't approved yet. This one is posted after them.
+   */
+  waitingFor: Waiting[]
+  /** 1 = post now; 2 = after step 1's companies are approved; and so on. */
+  step: number
+  /** This company's roster and runs as loaded — for working out transfers. */
+  roster: AltomatePayrollEmployee[] | null
+  runs: AltomatePayrollRun[] | null
 }
 
 export type PostingPlan = {
   imp: LoadedImport
   mapping: ColumnMapping
+  /** In posting order — a company someone moved from comes before the one they moved to. */
   companies: CompanyPostingPlan[]
+  /** People who moved between companies this month. */
+  transfers: Transfer[]
   /** Every blocker, company-prefixed. Empty = ready to post. */
   problems: string[]
   ok: boolean
@@ -154,6 +178,10 @@ export async function buildPostingPlan(importId: number): Promise<PostingPlan | 
         posted: already,
         action: null,
         existingRun: null,
+        waitingFor: [] as Waiting[],
+        step: 1,
+        roster: null,
+        runs: null,
       }
       if (v.error || !company) {
         return { ...base, plan: null, error: v.error ?? `No company uses the code ${v.code}.` }
@@ -197,11 +225,80 @@ export async function buildPostingPlan(importId: number): Promise<PostingPlan | 
       // since the upload.
       const decision = decideRun(runs, imp.period, already?.altomate_run_id ?? null)
       plan.problems.push(...decision.problems)
-      return { ...base, plan, error: null, action: decision.action, existingRun: decision.existing }
+      return {
+        ...base,
+        plan,
+        error: null,
+        action: decision.action,
+        existingRun: decision.existing,
+        roster: payrollEmployees,
+        runs,
+      }
     }),
   )
 
+  // ---- Transfers: who moved between companies this month, and the order ----
+  // Companies not on this timesheet count too: someone may have moved from
+  // one that is posted separately. Their rosters are read the same way.
+  const onSheet = new Set(results.map((r) => r.code.toUpperCase()))
+  const others = await Promise.all(
+    companies
+      .filter((co) => co.code && !onSheet.has(co.code.toUpperCase()) && tokenOf(co))
+      .map(async (co) => {
+        try {
+          const token = tokenOf(co)!
+          const [roster, runs] = await Promise.all([listPayrollEmployees(token), listPayrollRuns(token)])
+          return { code: co.code!, name: co.name, roster, runs }
+        } catch {
+          return null // unreachable: its transfers just can't be seen
+        }
+      }),
+  )
+  const monthStatus = (runs: AltomatePayrollRun[] | null) =>
+    runs?.find((r) => r.periodYear === imp.period.year && r.periodMonth === imp.period.month)?.status ??
+    null
+  const rosters: CompanyRoster[] = [
+    ...results
+      .filter((r) => r.roster)
+      .map((r) => ({ code: r.code, name: r.companyName, people: r.roster!, monthRunStatus: monthStatus(r.runs) })),
+    ...others
+      .filter((o) => o !== null)
+      .map((o) => ({ code: o!.code, name: o!.name, people: o!.roster, monthRunStatus: monthStatus(o!.runs) })),
+  ]
+  const transfers = findTransfers(imp.period, rosters)
+  const waits = waitingFor(transfers, rosters)
+  for (const r of results) {
+    const w = waits.get(r.code)
+    if (!w || r.posted?.status === "POSTED") continue
+    if (r.action === "create" || r.action === "replace") {
+      r.action = "waiting"
+      r.waitingFor = w
+    } else if (r.action === "approved") {
+      // Approved before the company they moved from — PCB missed that month.
+      r.plan?.warnings.push(
+        ...w.map(
+          (x) =>
+            `Approved in AltomateHR before ${x.fromName}'s ${periodLabel(imp.period)} — its PCB for ${x.people.map((p) => p.name).join(", ")} doesn't include what ${x.fromName} paid this month.`,
+        ),
+      )
+    }
+  }
+  const steps = postingSteps(
+    results.map((r) => r.code),
+    transfers,
+  )
+  if (steps) {
+    const stepOf = new Map(steps.flatMap((codes, i) => codes.map((c) => [c, i + 1] as const)))
+    for (const r of results) r.step = stepOf.get(r.code) ?? 1
+    results.sort((a, b) => a.step - b.step)
+  }
+
   const problems: string[] = []
+  if (!steps) {
+    problems.push(
+      "People moved between the same companies in both directions this month, so ABPay can't tell which goes first. Post these companies by hand in AltomateHR.",
+    )
+  }
   for (const r of results) {
     if (r.posted?.status === "POSTED") continue // done; nothing more is sent
     if (r.action === "approved") continue // approved in AltomateHR; left alone
@@ -215,7 +312,7 @@ export async function buildPostingPlan(importId: number): Promise<PostingPlan | 
     )
   }
 
-  return { imp, mapping, companies: results, problems, ok: problems.length === 0 }
+  return { imp, mapping, companies: results, transfers, problems, ok: problems.length === 0 }
 }
 
 /** What ABPay keeps about a company's posted run (posted_run.summary_json). */
@@ -313,6 +410,19 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
         posted++
         continue
       }
+      if (c.action === "waiting") {
+        // Held until the company someone moved from is approved — posting
+        // again then sends it. Its own earlier draft id is kept, so that
+        // draft is still recognised as ABPay's to replace.
+        await recordRun({
+          importId,
+          companyCode: c.code,
+          altomateRunId: c.posted?.altomate_run_id ?? null,
+          status: "WAITING",
+          error: c.waitingFor.map((w) => waitingMessage(w, plan.imp.period)).join(" "),
+        })
+        continue
+      }
       const company = c.company!
       const token = tokenOf(company)!
       const companyPlan = c.plan!
@@ -373,7 +483,8 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
           await saveRunAdjustment(token, runId, e.employeeProfileId, {
             manualLineItems: e.lines.map((l) => ({
               category: l.category,
-              label: `${l.columnLabel} (timesheet)`,
+              // "Travelling (MA2 / KT)", "OT 12.5 hrs (MA2 / KT)" — one row per outlet and group.
+              label: lineLabel(l),
               amount: l.amount,
               treatAsRecurring: false,
             })),
@@ -428,9 +539,12 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
     }
   } finally {
     const total = plan.companies.filter((c) => c.action !== "approved").length
+    // A company held for a transfer leaves the month PARTIAL, so it can be
+    // posted again once the other company is approved.
+    const waiting = plan.companies.some((c) => c.action === "waiting")
     await updateImportStatus(
       importId,
-      posted === total ? "POSTED" : posted > 0 ? "PARTIAL" : "FAILED",
+      posted === total ? "POSTED" : posted > 0 || waiting ? "PARTIAL" : "FAILED",
     )
   }
 

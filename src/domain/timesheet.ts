@@ -12,6 +12,26 @@
  * test; the SheetJS read lives in the service.
  */
 
+/**
+ * The pay items (everything but Basic) for one outlet + group of an employee.
+ * Their rows under the same outlet and group are added together; the parts
+ * of one employee always sum to that employee's line.
+ */
+export type TimesheetPart = {
+  outlet: string
+  group: string
+  unpaidLeave: number
+  travelling: number
+  meal: number
+  parking: number
+  otHours: number
+  otAmount: number
+  commission: number
+  bonus: number
+  /** Signed as in the sheet — negative means a deduction. */
+  deduction: number
+}
+
 /** One employee's month, aggregated across all their outlet rows. */
 export type EmployeeLine = {
   company: string
@@ -42,6 +62,11 @@ export type EmployeeLine = {
   totalGross: number
   /** How many timesheet rows merged into this line. */
   sourceRows: number
+  /**
+   * The same pay items per outlet + group, so each can be posted as its own
+   * adjustment row. Missing on imports parsed before this was kept.
+   */
+  parts?: TimesheetPart[]
 }
 
 export type CompanyTotals = {
@@ -125,9 +150,25 @@ function buildHeaderIndex(headerRow: unknown[]): Record<FieldKey, number> {
   return idx
 }
 
+function roundPart(part: TimesheetPart): TimesheetPart {
+  return {
+    ...part,
+    unpaidLeave: round2(part.unpaidLeave),
+    travelling: round2(part.travelling),
+    meal: round2(part.meal),
+    parking: round2(part.parking),
+    otHours: round2(part.otHours),
+    otAmount: round2(part.otAmount),
+    commission: round2(part.commission),
+    bonus: round2(part.bonus),
+    deduction: round2(part.deduction),
+  }
+}
+
 function roundLine(line: EmployeeLine): EmployeeLine {
   return {
     ...line,
+    parts: line.parts?.map(roundPart),
     basic: round2(line.basic),
     unpaidLeave: round2(line.unpaidLeave),
     travelling: round2(line.travelling),
@@ -262,9 +303,29 @@ export function normalizeTimesheet(
         deduction: 0,
         totalGross: 0,
         sourceRows: 0,
+        parts: [],
       }
       compMap.set(key, line)
     }
+    // The outlet + group this row belongs to — its pay items post as their
+    // own adjustment row (Basic is summed into the salary only).
+    const parts = (line.parts ??= [])
+    let part = parts.find(
+      (p) => p.outlet.toUpperCase() === outlet.toUpperCase() && p.group.toUpperCase() === group.toUpperCase(),
+    )
+    if (!part) {
+      part = { outlet, group, unpaidLeave: 0, travelling: 0, meal: 0, parking: 0, otHours: 0, otAmount: 0, commission: 0, bonus: 0, deduction: 0 }
+      parts.push(part)
+    }
+    part.unpaidLeave += num(cell(row, "unpaidLeave"))
+    part.travelling += num(cell(row, "travelling"))
+    part.meal += num(cell(row, "meal"))
+    part.parking += num(cell(row, "parking"))
+    part.otHours += num(cell(row, "otHours"))
+    part.otAmount += num(cell(row, "otAmount"))
+    part.commission += num(cell(row, "commission"))
+    part.bonus += num(cell(row, "bonus"))
+    part.deduction += num(cell(row, "deduction"))
     if (outlet && !line.outlets.includes(outlet)) line.outlets.push(outlet)
     line.basic += num(cell(row, "basic"))
     line.unpaidLeave += num(cell(row, "unpaidLeave"))

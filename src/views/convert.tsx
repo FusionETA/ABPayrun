@@ -1,3 +1,4 @@
+import { html } from "hono/html"
 import { addMonths, periodKey, periodLabel, samePeriod, type Period } from "../lib/period"
 import type { CompanyRunsView } from "../services/runs.service"
 
@@ -158,6 +159,166 @@ function UploadForm({ codes }: { codes: string[] }) {
   )
 }
 
+function ChevronIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="currentColor" class="h-4 w-4" aria-hidden="true">
+      <path
+        fill-rule="evenodd"
+        d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.17l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z"
+        clip-rule="evenodd"
+      />
+    </svg>
+  )
+}
+
+/**
+ * A styled dropdown for the payroll month. The value still lives in a real
+ * (visually hidden) `<select required>`, so the form posts and validates as
+ * before; the button + menu just drive it. Months are grouped by year,
+ * newest first.
+ */
+function MonthSelect({ choices }: { choices: Period[] }) {
+  const newestFirst = [...choices].reverse()
+  const years = [...new Set(newestFirst.map((p) => p.year))]
+  return (
+    <div class="block" data-month-select>
+      <span id="period-label" class="text-xs font-semibold uppercase tracking-wide text-muted">
+        Payroll month
+      </span>
+      <select
+        name="period"
+        form="upload-form"
+        required
+        tabindex={-1}
+        aria-hidden="true"
+        class="sr-only"
+      >
+        <option value="" selected>
+          Choose month…
+        </option>
+        {newestFirst.map((p) => (
+          <option value={periodKey(p)}>{periodLabel(p)}</option>
+        ))}
+      </select>
+      <div class="relative mt-1.5 w-60">
+        <button
+          type="button"
+          data-ms-button
+          aria-haspopup="listbox"
+          aria-expanded="false"
+          aria-labelledby="period-label"
+          class="flex w-full items-center justify-between gap-2 rounded-xl border border-brand/15 bg-white px-3.5 py-2.5 text-left text-base font-semibold shadow-sm outline-none transition hover:border-brand/40 focus-visible:border-brand focus-visible:ring-4 focus-visible:ring-brand/15 aria-expanded:border-brand aria-expanded:ring-4 aria-expanded:ring-brand/15 data-[invalid]:border-red-400 data-[invalid]:ring-4 data-[invalid]:ring-red-200"
+        >
+          <span data-ms-text class="text-muted">
+            Choose month…
+          </span>
+          <span class="text-brand/70 transition [[aria-expanded=true]>&]:rotate-180">
+            <ChevronIcon />
+          </span>
+        </button>
+        <ul
+          role="listbox"
+          data-ms-menu
+          aria-labelledby="period-label"
+          tabindex={-1}
+          class="absolute left-0 right-0 top-full z-30 mt-2 hidden max-h-72 overflow-y-auto rounded-2xl border border-brand/10 bg-white p-1.5 shadow-[0_18px_50px_-12px_rgba(76,26,134,.35)] outline-none"
+        >
+          {years.map((year) => (
+            <li role="presentation">
+              <p class="sticky top-0 bg-white px-2.5 pb-1 pt-2 text-[11px] font-bold uppercase tracking-wider text-muted">
+                {year}
+              </p>
+              <ul role="presentation">
+                {newestFirst
+                  .filter((p) => p.year === year)
+                  .map((p) => (
+                    <li
+                      role="option"
+                      aria-selected="false"
+                      tabindex={-1}
+                      data-value={periodKey(p)}
+                      class="group flex cursor-pointer items-center justify-between rounded-lg px-2.5 py-2 text-sm font-medium text-ink outline-none transition hover:bg-brand/5 focus:bg-brand/5 aria-selected:bg-brand/10 aria-selected:font-bold aria-selected:text-brand"
+                    >
+                      {periodLabel(p)}
+                      <svg
+                        viewBox="0 0 20 20"
+                        fill="currentColor"
+                        class="hidden h-4 w-4 group-aria-selected:block"
+                        aria-hidden="true"
+                      >
+                        <path
+                          fill-rule="evenodd"
+                          d="M16.7 5.3a1 1 0 0 1 0 1.4l-7.5 7.5a1 1 0 0 1-1.4 0l-3.5-3.5a1 1 0 1 1 1.4-1.4l2.8 2.8 6.8-6.8a1 1 0 0 1 1.4 0Z"
+                          clip-rule="evenodd"
+                        />
+                      </svg>
+                    </li>
+                  ))}
+              </ul>
+            </li>
+          ))}
+        </ul>
+      </div>
+      {html`<script>
+        (function(){
+          var root = document.querySelector('[data-month-select]');
+          if(!root) return;
+          var select = root.querySelector('select');
+          var btn = root.querySelector('[data-ms-button]');
+          var text = root.querySelector('[data-ms-text]');
+          var menu = root.querySelector('[data-ms-menu]');
+          var opts = Array.prototype.slice.call(root.querySelectorAll('[role=option]'));
+
+          function isOpen(){ return !menu.classList.contains('hidden'); }
+          function open(){
+            menu.classList.remove('hidden');
+            btn.setAttribute('aria-expanded','true');
+            var cur = opts.find(function(o){ return o.dataset.value === select.value; }) || opts[0];
+            if(cur){ cur.focus(); cur.scrollIntoView({block:'nearest'}); }
+          }
+          function close(refocus){
+            menu.classList.add('hidden');
+            btn.setAttribute('aria-expanded','false');
+            if(refocus) btn.focus();
+          }
+          function choose(o){
+            select.value = o.dataset.value;
+            opts.forEach(function(x){ x.setAttribute('aria-selected', x === o ? 'true' : 'false'); });
+            text.textContent = o.textContent.trim();
+            text.className = 'text-brand font-bold';
+            btn.removeAttribute('data-invalid');
+            close(true);
+          }
+
+          btn.addEventListener('click', function(){ isOpen() ? close(false) : open(); });
+          btn.addEventListener('keydown', function(e){
+            if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){ e.preventDefault(); open(); }
+          });
+          opts.forEach(function(o, i){
+            o.addEventListener('click', function(){ choose(o); });
+            o.addEventListener('keydown', function(e){
+              if(e.key === 'ArrowDown'){ e.preventDefault(); (opts[i+1] || o).focus(); }
+              else if(e.key === 'ArrowUp'){ e.preventDefault(); (opts[i-1] || o).focus(); }
+              else if(e.key === 'Home'){ e.preventDefault(); opts[0].focus(); }
+              else if(e.key === 'End'){ e.preventDefault(); opts[opts.length-1].focus(); }
+              else if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); choose(o); }
+              else if(e.key === 'Escape' || e.key === 'Tab'){ close(e.key === 'Escape'); }
+            });
+          });
+          document.addEventListener('click', function(e){ if(isOpen() && !root.contains(e.target)) close(false); });
+          // Upload without a month: show it on the dropdown instead of the
+          // browser bubble on the hidden select.
+          select.addEventListener('invalid', function(e){
+            e.preventDefault();
+            btn.setAttribute('data-invalid','');
+            open();
+          });
+        })();
+      </script>`}
+    </div>
+  )
+}
+
 /**
  * The month picker. There's no default: the month has to be chosen on
  * purpose, so a timesheet can't land in the wrong month by not looking.
@@ -179,27 +340,11 @@ function PeriodPicker({
   const limiting = earliest
     ? companies.filter((v) => v.next && samePeriod(v.next, earliest))
     : []
+  // z-10: the open menu has to sit above the upload card below.
   return (
-    <div class="glass mt-5 rounded-3xl p-6">
+    <div class="glass relative z-10 mt-5 rounded-3xl p-6">
       <div class="flex flex-wrap items-end justify-between gap-4">
-        <label class="block">
-          <span class="text-xs font-semibold uppercase tracking-wide text-muted">
-            Payroll month
-          </span>
-          <select
-            name="period"
-            form="upload-form"
-            required
-            class="mt-1.5 block w-56 rounded-xl border border-white/70 bg-white px-3 py-2 text-base font-bold text-brand outline-none transition focus:border-brand focus:ring-4 focus:ring-brand/15"
-          >
-            <option value="" selected>
-              Choose month…
-            </option>
-            {[...choices].reverse().map((p) => (
-              <option value={periodKey(p)}>{periodLabel(p)}</option>
-            ))}
-          </select>
-        </label>
+        <MonthSelect choices={choices} />
         <span class="inline-flex items-center gap-1.5 rounded-full bg-brand/10 px-3 py-1 text-xs font-semibold text-brand">
           <CalendarIcon />{" "}
           {earliest ? `${periodLabel(earliest)} or later` : "No runs yet"}
