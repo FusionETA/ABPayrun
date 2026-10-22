@@ -1,4 +1,5 @@
 import { config } from "../config"
+import { periodLabel } from "../lib/period"
 
 /** One organization the owner can manage in AltomateHR. */
 export type AltomateOrg = { id: string; name: string }
@@ -177,6 +178,15 @@ export type AltomatePayrollRun = {
   id: string
   periodYear: number
   periodMonth: number
+  /**
+   * A month can be split into several runs (one per timesheet / staff
+   * group). `name` tells them apart; `label` is "July 2026 – Kitchen" (just
+   * the month when unnamed). Null / the month from an older AltomateHR.
+   */
+  name: string | null
+  label: string
+  /** 1 for the month's first run, 2 for the next, … (1 from an older AltomateHR). */
+  runNumber: number
   status: AltomatePayrollRunStatus
   gross: number | null
   net: number | null
@@ -203,6 +213,9 @@ export async function listPayrollRuns(token: string): Promise<AltomatePayrollRun
       id: string
       periodYear: number
       periodMonth: number
+      name?: string | null
+      label?: string
+      runNumber?: number
       status: AltomatePayrollRunStatus
       totalGross?: number | null
       totalNet?: number | null
@@ -218,6 +231,9 @@ export async function listPayrollRuns(token: string): Promise<AltomatePayrollRun
     id: r.id,
     periodYear: r.periodYear,
     periodMonth: r.periodMonth,
+    name: r.name ?? null,
+    label: r.label ?? periodLabel({ year: r.periodYear, month: r.periodMonth }),
+    runNumber: r.runNumber ?? 1,
     status: r.status,
     gross: r.totalGross ?? null,
     net: r.totalNet ?? null,
@@ -473,17 +489,23 @@ export type AltomateRunDetail = {
 }
 
 /**
- * Create the month's DRAFT run. `excludedEmployeeProfileIds` keeps people
- * who aren't on the timesheet out of it. `skipProration` is always on:
- * ABPay's figures are final (part-month staff are already prorated on the
- * timesheet), so AltomateHR mustn't prorate them again. An AltomateHR that
- * doesn't have the flag yet ignores it — `setRunSkipProration` then tells.
- * A run that already exists for the month is a 409 →
- * `AltomateApiError("conflict")`.
+ * Create a DRAFT run for the month, named after the timesheet.
+ * `excludedEmployeeProfileIds` keeps people who aren't on the timesheet out
+ * of it. `skipProration` is always on: ABPay's figures are final (part-month
+ * staff are already prorated on the timesheet), so AltomateHR mustn't
+ * prorate them again. An AltomateHR that doesn't have the flag yet ignores
+ * it — `setRunSkipProration` then tells. AltomateHR answers 409 →
+ * `AltomateApiError("conflict")` with its reason: the month already has a
+ * run by that name, or everyone on it is already in another run.
  */
 export async function createPayrollRun(
   token: string,
-  input: { periodYear: number; periodMonth: number; excludedEmployeeProfileIds: string[] },
+  input: {
+    periodYear: number
+    periodMonth: number
+    name: string
+    excludedEmployeeProfileIds: string[]
+  },
 ): Promise<AltomateRunDetail> {
   return altomateSend<AltomateRunDetail>(token, "POST", "/payroll/runs", {
     ...input,
@@ -530,6 +552,26 @@ export async function setRunSkipProration(
  */
 export async function deletePayrollRun(token: string, runId: string): Promise<void> {
   await altomateSend(token, "DELETE", `/payroll/runs/${encodeURIComponent(runId)}`)
+}
+
+/**
+ * Who a run is for: its chosen roster plus whoever it has a payslip for.
+ * "everyone" for a run with neither — an older run that covers the whole
+ * company — which overlaps anyone.
+ */
+export async function getPayrollRunPeople(
+  token: string,
+  runId: string,
+): Promise<string[] | "everyone"> {
+  const detail = await altomateSend<{
+    payslips?: { employeeProfileId: string }[]
+    memberEmployeeProfileIds?: string[]
+  }>(token, "GET", `/payroll/runs/${encodeURIComponent(runId)}`)
+  const people = new Set([
+    ...(detail.memberEmployeeProfileIds ?? []),
+    ...(detail.payslips ?? []).map((p) => p.employeeProfileId),
+  ])
+  return people.size > 0 ? [...people] : "everyone"
 }
 
 export async function getPayrollRun(token: string, runId: string): Promise<AltomateRunDetail> {

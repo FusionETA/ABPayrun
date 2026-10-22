@@ -9,6 +9,7 @@ import { waitingMessage } from "../domain/transfers"
 import { periodLabel, type Period } from "../lib/period"
 import type { AltomateAdjustmentCategory } from "../services/altomate.service"
 import type { CompanyPostingPlan, PostingPlan } from "../services/posting.service"
+import { timesheetName } from "../repositories/import.repository"
 
 function money(n: number): string {
   return n.toLocaleString("en-MY", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -232,7 +233,8 @@ export function ImportReviewPage({
   categories: AltomateAdjustmentCategory[]
 }) {
   const importId = plan.imp.record.id
-  const label = periodLabel(plan.imp.period)
+  // "July 2026 – Kitchen": the runs this timesheet posts carry its name.
+  const label = `${periodLabel(plan.imp.period)} – ${timesheetName(plan.imp.record)}`
   const effectiveFrom = salaryEffectiveDate(plan.imp.period)
   const catLabel = new Map(categories.map((c) => [c.code, c.label]))
 
@@ -291,8 +293,9 @@ export function ImportReviewPage({
             {held.length > 0 ? (
               <p class="mt-2 text-sm text-sky-800">
                 {held.map((c) => c.companyName).join(", ")} {held.length === 1 ? "is" : "are"}{" "}
-                held for now — someone moved there from another company this month. Approve that
-                company&apos;s {label} run in AltomateHR, then come back here and post again.
+                held for now — someone moved there from another company this month. Approve every
+                one of that company&apos;s {periodLabel(plan.imp.period)} runs in AltomateHR, then
+                come back here and post again.
               </p>
             ) : null}
           </div>

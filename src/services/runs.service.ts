@@ -7,6 +7,7 @@ import {
   periodKey,
   periodLabel,
   periodRange,
+  samePeriod,
   type Period,
 } from "../lib/period"
 import {
@@ -29,7 +30,10 @@ export type CompanyRunsView = {
   runs: AltomatePayrollRun[]
   /** Most recent run's period, or null if there are none / it failed. */
   latest: Period | null
-  /** Status of the most recent run (null if there are none). */
+  /**
+   * Status of the most recent month (null if there are none): with several
+   * runs in it, the least advanced one — it's approved only once all are.
+   */
   latestStatus: AltomatePayrollRunStatus | null
   /**
    * True when the company can advance to a new month: its latest run is
@@ -62,10 +66,16 @@ export type RunsOverview = {
   earliest: Period | null
   /**
    * The month still waiting on approval, when there is one: it's the only
-   * month that can be uploaded, again, to change it. Null when every
-   * company's latest run is approved.
+   * month that can be uploaded, again, to change it (or to add another
+   * timesheet to it). Null when every company's latest run is approved.
    */
   reopen: Period | null
+  /**
+   * The newest month, already approved everywhere, offered again so another
+   * timesheet (another staff group's runs) can be added to it. Null when
+   * there's none, or a month is waiting on approval.
+   */
+  addTo: Period | null
   /**
    * The months the upload may be for, oldest first. Just `reopen` while a
    * month is waiting on approval; empty when nothing can run (no company
@@ -128,25 +138,43 @@ async function loadCompany(company: CompanyRecord): Promise<CompanyRunsView> {
     return inertView(company, true, error)
   }
 
-  // Newest period first.
-  runs.sort((a, b) => periodKey(toPeriod(b)).localeCompare(periodKey(toPeriod(a))))
+  // Newest period first; within a month the least-advanced run first, so the
+  // row shown for the month says what still needs doing.
+  const rank = { DRAFT: 0, PENDING_APPROVAL: 1, SUBMITTED: 2 } as const
+  runs.sort(
+    (a, b) =>
+      periodKey(toPeriod(b)).localeCompare(periodKey(toPeriod(a))) ||
+      rank[a.status] - rank[b.status] ||
+      a.runNumber - b.runNumber,
+  )
   const newest = runs[0]
   const latest = newest ? toPeriod(newest) : null
+  // A month can hold several runs (one per timesheet); it's only approved
+  // once every one of them is.
+  const latestRuns = latest ? runs.filter((r) => samePeriod(toPeriod(r), latest)) : []
+  const latestStatus: AltomatePayrollRunStatus | null =
+    latestRuns.length === 0
+      ? null
+      : latestRuns.some((r) => r.status === "DRAFT")
+        ? "DRAFT"
+        : latestRuns.some((r) => r.status === "PENDING_APPROVAL")
+          ? "PENDING_APPROVAL"
+          : "SUBMITTED"
 
   // Advancement rule: a company can only start a NEW month once its latest
-  // run is SUBMITTED (approved). A DRAFT / PENDING_APPROVAL latest run means
+  // month is SUBMITTED (approved). A DRAFT / PENDING_APPROVAL run in it means
   // that month is still open — it must be submitted in AltomateHR first.
   let ready = true
   let next: Period | null = null
   let blockedReason: string | null = null
 
   if (newest) {
-    if (newest.status === "SUBMITTED") {
+    if (latestStatus === "SUBMITTED") {
       next = nextPeriod(toPeriod(newest))
     } else {
       ready = false
       next = null
-      const state = newest.status === "DRAFT" ? "still a draft" : "awaiting approval"
+      const state = latestStatus === "DRAFT" ? "still a draft" : "awaiting approval"
       blockedReason = `${periodLabel(
         toPeriod(newest),
       )} is ${state} — submit it in AltomateHR before the next month can run, or re-import ${periodLabel(
@@ -160,7 +188,7 @@ async function loadCompany(company: CompanyRecord): Promise<CompanyRunsView> {
     connected: true,
     runs,
     latest,
-    latestStatus: newest?.status ?? null,
+    latestStatus,
     ready,
     next,
     blockedReason,
@@ -194,7 +222,7 @@ export async function getRunsOverview(): Promise<RunsOverview> {
 export function monthChoices(
   loaded: Pick<CompanyRunsView, "ready" | "latest" | "next">[],
   now: Period = currentPeriod(),
-): Pick<RunsOverview, "earliest" | "reopen" | "choices"> {
+): Pick<RunsOverview, "earliest" | "reopen" | "addTo" | "choices"> {
   const blocked = loaded.filter((v) => !v.ready)
 
   let earliest: Period | null = null
@@ -203,6 +231,7 @@ export function monthChoices(
   }
 
   let reopen: Period | null = null
+  let addTo: Period | null = null
   let choices: Period[] = []
   if (blocked.length > 0) {
     // Re-importing is only possible when the open runs are all one month and
@@ -218,7 +247,12 @@ export function monthChoices(
     const from = earliest ?? addMonths(now, -LOOKBACK_MONTHS)
     const to = addMonths(comparePeriods(from, now) > 0 ? from : now, 1)
     choices = periodRange(from, to)
+    // The newest month stays on offer, to add another timesheet to it.
+    if (earliest) {
+      addTo = addMonths(earliest, -1)
+      choices = [addTo, ...choices]
+    }
   }
 
-  return { earliest, reopen, choices }
+  return { earliest, reopen, addTo, choices }
 }

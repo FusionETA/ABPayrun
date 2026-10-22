@@ -93,7 +93,13 @@ function NeedsAttention({ missing }: { missing: CompanyRunsView[] }) {
   )
 }
 
-function UploadForm({ codes }: { codes: string[] }) {
+/** A timesheet already uploaded for a month on offer. */
+export type ExistingTimesheet = { id: number; period: string; name: string; status: string }
+
+const FIELD =
+  "w-full rounded-xl border border-brand/15 bg-white px-3.5 py-2.5 text-sm text-ink shadow-sm outline-none transition focus:border-brand focus:ring-4 focus:ring-brand/15"
+
+function UploadForm({ codes, existing }: { codes: string[]; existing: ExistingTimesheet[] }) {
   return (
     <form
       id="upload-form"
@@ -134,8 +140,46 @@ function UploadForm({ codes }: { codes: string[] }) {
           name="timesheet"
           accept=".xlsx,.xls,.csv"
           required
+          data-ts-file
           class="block max-w-xs text-sm text-muted file:mr-3 file:cursor-pointer file:rounded-xl file:border-0 file:bg-brand/10 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-brand hover:file:bg-brand/15"
         />
+        <div class="grid w-full max-w-md gap-4 text-left">
+          <div data-ts-target class="hidden">
+            <label for="ts-target" class="text-xs font-semibold uppercase tracking-wide text-muted">
+              This timesheet is
+            </label>
+            <select id="ts-target" name="target" data-ts-target-select class={`mt-1.5 ${FIELD}`}>
+              <option value="">Choose…</option>
+              <option value="new">A new timesheet for the month</option>
+              {existing.map((t) => (
+                <option value={String(t.id)} data-period={t.period} data-name={t.name}>
+                  A corrected copy of “{t.name}”{t.status === "POSTED" ? " (posted)" : ""}
+                </option>
+              ))}
+            </select>
+            <p class="mt-1.5 text-xs text-muted">
+              The month already has a timesheet. A new one is posted as separate runs — nobody on
+              it may already be in another run that month. A corrected copy replaces that
+              timesheet&apos;s draft runs.
+            </p>
+          </div>
+          <div>
+            <label for="ts-name" class="text-xs font-semibold uppercase tracking-wide text-muted">
+              Timesheet name
+            </label>
+            <input
+              id="ts-name"
+              name="name"
+              maxlength={60}
+              data-ts-name
+              placeholder="Filled in from the file name"
+              class={`mt-1.5 ${FIELD}`}
+            />
+            <p class="mt-1.5 text-xs text-muted">
+              Each company&apos;s run in AltomateHR is named after it — e.g. “July 2026 – Kitchen”.
+            </p>
+          </div>
+        </div>
         <button
           type="submit"
           class="press inline-flex items-center gap-2 rounded-2xl bg-brand hover:bg-[#3f1670] px-6 py-2.5 text-sm font-semibold text-white shadow-lg shadow-brand/30"
@@ -155,6 +199,54 @@ function UploadForm({ codes }: { codes: string[] }) {
           Upload &amp; preview
         </button>
       </div>
+      {html`<script>
+        (function(){
+          var form = document.getElementById('upload-form');
+          if(!form) return;
+          var period = document.querySelector('[name=period][form=upload-form]');
+          var file = form.querySelector('[data-ts-file]');
+          var name = form.querySelector('[data-ts-name]');
+          var box = form.querySelector('[data-ts-target]');
+          var target = form.querySelector('[data-ts-target-select]');
+          var typed = false;
+          name.addEventListener('input', function(){ typed = name.value.trim() !== ''; });
+          function fromFile(f){
+            var dot = f.lastIndexOf('.');
+            return (dot > 0 ? f.slice(0, dot) : f).split(' ').filter(Boolean).join(' ').slice(0, 60);
+          }
+          // Only the chosen month's timesheets can be replaced; the choice
+          // is asked only when that month already has one.
+          function sync(){
+            var key = period ? period.value : '';
+            var any = false;
+            Array.prototype.forEach.call(target.options, function(o){
+              if(!o.dataset.period) return;
+              var mine = o.dataset.period === key;
+              o.hidden = !mine; o.disabled = !mine;
+              if(mine) any = true;
+            });
+            if(target.selectedOptions[0] && target.selectedOptions[0].disabled) target.value = '';
+            box.classList.toggle('hidden', !any);
+            target.required = any;
+          }
+          if(period) period.addEventListener('change', function(){ sync(); fill(); });
+          function replacingName(){
+            var o = target.selectedOptions[0];
+            return o && !o.disabled && o.dataset.name ? o.dataset.name : '';
+          }
+          // A corrected copy keeps its timesheet's name; otherwise the name
+          // comes from the file — unless one has been typed.
+          function fill(){
+            if(typed) return;
+            var keep = replacingName();
+            if(keep) name.value = keep;
+            else name.value = file.files && file.files[0] ? fromFile(file.files[0].name) : '';
+          }
+          file.addEventListener('change', fill);
+          target.addEventListener('change', fill);
+          sync();
+        })();
+      </script>`}
     </form>
   )
 }
@@ -287,6 +379,7 @@ function MonthSelect({ choices }: { choices: Period[] }) {
             text.textContent = o.textContent.trim();
             text.className = 'text-brand font-bold';
             btn.removeAttribute('data-invalid');
+            select.dispatchEvent(new Event('change'));
             close(true);
           }
 
@@ -327,11 +420,14 @@ function MonthSelect({ choices }: { choices: Period[] }) {
 function PeriodPicker({
   choices,
   earliest,
+  addTo,
   reopen,
   companies,
 }: {
   choices: Period[]
   earliest: Period | null
+  /** The newest month, approved, offered again to add another timesheet. */
+  addTo: Period | null
   reopen: Period | null
   companies: CompanyRunsView[]
 }) {
@@ -347,15 +443,17 @@ function PeriodPicker({
         <MonthSelect choices={choices} />
         <span class="inline-flex items-center gap-1.5 rounded-full bg-brand/10 px-3 py-1 text-xs font-semibold text-brand">
           <CalendarIcon />{" "}
-          {earliest ? `${periodLabel(earliest)} or later` : "No runs yet"}
+          {addTo ? `${periodLabel(addTo)} or later` : earliest ? `${periodLabel(earliest)} or later` : "No runs yet"}
         </span>
       </div>
       <p class="mt-3 border-t border-white/50 pt-3 text-xs text-muted">
         {earliest ? (
           <>
             {limiting.map((v) => v.company.name).join(", ")}{" "}
-            {limiting.length === 1 ? "has" : "have"} a {periodLabel(addMonths(earliest, -1))}{" "}
-            run already, so {periodLabel(earliest)} is the earliest month you can run.
+            {limiting.length === 1 ? "has" : "have"} {periodLabel(addMonths(earliest, -1))}{" "}
+            approved already, so {periodLabel(earliest)} is the earliest new month — or pick{" "}
+            {periodLabel(addMonths(earliest, -1))} to add another timesheet to it (for staff not
+            paid in it yet).
           </>
         ) : (
           <>No company has a payroll run yet, so you can start from any month in the list.</>
@@ -384,7 +482,8 @@ function ReimportPicker({ month, companies }: { month: Period; companies: Compan
       </div>
       <p class="mt-3 border-t border-white/50 pt-3 text-xs text-muted">
         {label} isn&apos;t approved yet for {open.map((v) => v.company.name).join(", ")}, so you can
-        upload it again to make changes: posting replaces the draft runs ABPay made for {label}. A
+        upload a timesheet for it again to make changes — posting replaces the draft runs ABPay
+        made for that timesheet — or add another timesheet for {label}. A
         run awaiting approval has to be sent back to draft in AltomateHR first. Companies already
         approved for {label} are left as they are.{" "}
         {periodLabel(addMonths(month, 1))} opens once every company&apos;s {label} run is approved
@@ -407,11 +506,16 @@ export function ConvertPage({
   earliest,
   reopen,
   companies,
+  existing,
+  addTo,
   reason,
   uploadError,
 }: {
-  /** A month started but not fully posted, to carry on with. */
-  resume?: { id: number; label: string; status: string } | null
+  /** A timesheet started but not fully posted, to carry on with. */
+  resume?: { id: number; label: string; status: string }[]
+  /** Timesheets already uploaded for the months on offer. */
+  existing: ExistingTimesheet[]
+  addTo: Period | null
   choices: Period[]
   earliest: Period | null
   reopen: Period | null
@@ -424,20 +528,20 @@ export function ConvertPage({
   return (
     <div class="[&>*:first-child]:mt-0">
 
-      {resume ? (
+      {(resume ?? []).map((r) => (
         <div class="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-brand/20 bg-brand/5 px-4 py-3 text-sm">
           <span class="text-ink">
-            <span class="font-semibold">{resume.label}</span> was started but{" "}
-            {resume.status === "PARTIAL" ? "only partly posted" : "not posted yet"}.
+            <span class="font-semibold">{r.label}</span> was started but{" "}
+            {r.status === "PARTIAL" ? "only partly posted" : r.status === "FAILED" ? "not posted — it failed" : "not posted yet"}.
           </span>
           <a
-            href={resume.status === "DRAFT" ? `/imports/${resume.id}/mapping` : `/imports/${resume.id}`}
+            href={r.status === "DRAFT" ? `/imports/${r.id}/mapping` : `/imports/${r.id}`}
             class="font-semibold text-brand hover:underline"
           >
             Continue →
           </a>
         </div>
-      ) : null}
+      ))}
 
       {uploadError ? (
         <p class="mt-4 rounded-2xl border border-red-200/70 bg-red-50/80 px-4 py-3 text-sm font-medium text-red-700">
@@ -462,13 +566,15 @@ export function ConvertPage({
             </h1>
             <p class="mt-1.5 text-sm text-muted">
               Upload one timesheet — ABPay splits it by company and posts a run to
-              each.
+              each, named after the timesheet. A month can have more than one timesheet
+              (say, one per staff group); each person can be in only one of them.
             </p>
           </div>
 
           <PeriodPicker
             choices={choices}
             earliest={earliest}
+            addTo={addTo}
             reopen={reopen}
             companies={companies}
           />
@@ -477,7 +583,7 @@ export function ConvertPage({
               has nothing to say here. */}
           <div class="mt-4 space-y-4">
             {missing.length > 0 ? <NeedsAttention missing={missing} /> : null}
-            <UploadForm codes={codes} />
+            <UploadForm codes={codes} existing={existing} />
           </div>
         </>
       )}

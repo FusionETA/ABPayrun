@@ -131,7 +131,7 @@ function NextRunBanner({ overview }: { overview: RunsOverview }) {
           </h2>
           <p class="mt-1 text-sm text-muted">
             {earliest
-              ? `All ${overview.loadedCount} connected companies are approved. Choose the month when you upload — ${periodLabel(earliest)} is the earliest, after the newest run.`
+              ? `All ${overview.loadedCount} connected companies are approved. Choose the month when you upload — ${periodLabel(earliest)} is the earliest new month${overview.addTo ? `, or add another timesheet to ${periodLabel(overview.addTo)}` : ""}.`
               : "No company has a payroll run yet, so you can start from any month. Choose it when you upload."}
           </p>
         </div>
@@ -146,8 +146,9 @@ function NextRunBanner({ overview }: { overview: RunsOverview }) {
   )
 }
 
+// "July 2026 – Kitchen": a month can hold several runs, one per timesheet.
 function runPeriod(run: AltomatePayrollRun): string {
-  return periodLabel({ year: run.periodYear, month: run.periodMonth })
+  return run.label
 }
 
 const CELL = "px-3 py-3"
@@ -281,7 +282,11 @@ function CompanyRows({ view }: { view: CompanyRunsView }) {
       </tr>
       {earlier.map((run) => (
         <tr data-group={group} class="hidden border-t border-slate-100 bg-white/30 text-[13px]">
-          <td class={`${CELL} text-right text-xs text-muted`}>earlier</td>
+          <td class={`${CELL} text-right text-xs text-muted`}>
+            {latest && run.periodYear === latest.periodYear && run.periodMonth === latest.periodMonth
+              ? "same month"
+              : "earlier"}
+          </td>
           <RunCells run={run} />
           <td colspan={COLUMNS - 8} />
         </tr>

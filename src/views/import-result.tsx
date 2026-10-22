@@ -36,16 +36,19 @@ function summaryOf(run: PostedRun | undefined): PostedRunSummary | null {
 export function ImportResultPage({
   importId,
   period,
+  name,
   status,
   companies,
 }: {
   importId: number
   period: Period
+  /** The timesheet's name — each company's run is named after it. */
+  name: string
   status: string
   /** Every company on the timesheet, with its posting record if there is one. */
   companies: { code: string; name: string; run: PostedRun | undefined }[]
 }) {
-  const label = periodLabel(period)
+  const label = `${periodLabel(period)} – ${name}`
   const incomplete = companies.some(
     (c) => c.run?.status !== "POSTED" && c.run?.status !== "APPROVED",
   )

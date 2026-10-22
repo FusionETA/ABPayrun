@@ -2,6 +2,9 @@ import {
   MAPPABLE_COLUMNS,
   planCompany,
   decideRun,
+  alreadyInOtherRuns,
+  runNameClash,
+  type OtherRun,
   lineLabel,
   resolveMapping,
   salaryEffectiveDate,
@@ -25,6 +28,7 @@ import {
   claimImportForPosting,
   getImport,
   getImportPayload,
+  timesheetName,
   updateImportStatus,
   type ImportRecord,
 } from "../repositories/import.repository"
@@ -35,6 +39,7 @@ import {
   createPayrollRun,
   deletePayrollRun,
   generatePayrollRun,
+  getPayrollRunPeople,
   importSalaryChanges,
   listAdjustmentCategories,
   listPayrollEmployees,
@@ -120,7 +125,7 @@ export type CompanyPostingPlan = {
    * approved for this company. Null when there's no plan.
    */
   action: "create" | "replace" | "approved" | "waiting" | null
-  /** The company's run for this month in AltomateHR, if it has one. */
+  /** This timesheet's own run for the month in AltomateHR, if it has one. */
   existingRun: AltomatePayrollRun | null
   /**
    * Set when action is "waiting": the companies someone moved from this
@@ -225,6 +230,37 @@ export async function buildPostingPlan(importId: number): Promise<PostingPlan | 
       // since the upload.
       const decision = decideRun(runs, imp.period, already?.altomate_run_id ?? null)
       plan.problems.push(...decision.problems)
+
+      // The month's other runs — another timesheet's, or one made in
+      // AltomateHR. Nobody on this timesheet may already be in one: a person
+      // is paid in only one run a month.
+      if (decision.action !== "approved") {
+        const others = runs.filter(
+          (r) =>
+            r.periodYear === imp.period.year &&
+            r.periodMonth === imp.period.month &&
+            r.id !== decision.existing?.id,
+        )
+        // AltomateHR refuses a second run with the same name (or one whose
+        // files would be named the same) — say so here, before anything is sent.
+        const clash = runNameClash(timesheetName(imp.record), others)
+        if (clash) plan.problems.push(clash)
+        try {
+          const otherRuns: OtherRun[] = await Promise.all(
+            others.map(async (r) => ({ label: r.label, people: await getPayrollRunPeople(token, r.id) })),
+          )
+          plan.problems.push(
+            ...alreadyInOtherRuns(
+              plan.employees.map((e) => ({ employeeProfileId: e.employeeProfileId, name: e.name })),
+              otherRuns,
+            ),
+          )
+        } catch (err) {
+          plan.problems.push(
+            describe(err, `Couldn't check who is in this month's other AltomateHR runs.`),
+          )
+        }
+      }
       return {
         ...base,
         plan,
@@ -254,9 +290,17 @@ export async function buildPostingPlan(importId: number): Promise<PostingPlan | 
         }
       }),
   )
-  const monthStatus = (runs: AltomatePayrollRun[] | null) =>
-    runs?.find((r) => r.periodYear === imp.period.year && r.periodMonth === imp.period.month)?.status ??
-    null
+  // A company's month is approved only once every run in it is — with
+  // several (one per timesheet), the least advanced one says where it stands.
+  const monthStatus = (runs: AltomatePayrollRun[] | null) => {
+    const month = (runs ?? []).filter(
+      (r) => r.periodYear === imp.period.year && r.periodMonth === imp.period.month,
+    )
+    if (month.length === 0) return null
+    if (month.some((r) => r.status === "DRAFT")) return "DRAFT"
+    if (month.some((r) => r.status === "PENDING_APPROVAL")) return "PENDING_APPROVAL"
+    return "SUBMITTED"
+  }
   const rosters: CompanyRoster[] = [
     ...results
       .filter((r) => r.roster)
@@ -387,6 +431,9 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
   }
 
   const label = periodLabel(plan.imp.period)
+  // Each company's run is named after the timesheet, so a month's runs can
+  // be told apart in AltomateHR (and in their files).
+  const runName = timesheetName(plan.imp.record)
   const note = `Imported by ABPay from ${plan.imp.record.filename ?? "the timesheet"} (${label}), posted by ${postedBy}.`
   let posted = 0
   let failed = 0
@@ -462,20 +509,38 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
           created = await createPayrollRun(token, {
             periodYear: plan.imp.period.year,
             periodMonth: plan.imp.period.month,
+            name: runName,
             excludedEmployeeProfileIds: companyPlan.excluded.map((e) => e.employeeProfileId),
           })
           runId = created.id
         } catch (err) {
           if (err instanceof AltomateApiError && err.code === "conflict") {
+            // AltomateHR says why: a run by this name already exists, or
+            // everyone on it is already in another run this month.
             throw new AltomateApiError(
               "conflict",
-              `AltomateHR already has a ${label} run that ABPay didn't create, so ABPay won't change it. Delete that draft in AltomateHR, then post again.`,
+              `AltomateHR wouldn't create the ${label} – ${runName} run: ${err.message}`,
             )
           }
           throw err
         }
         // Remember it straight away: a crash after this must not create a second run.
         await recordRun({ importId, companyCode: c.code, altomateRunId: runId, status: "POSTING" })
+
+        // AltomateHR leaves out anyone already in another run this month. The
+        // review checked, but another timesheet may have been posted since —
+        // so make sure everyone on this one is actually in the run.
+        const inRun = await getPayrollRunPeople(token, runId)
+        if (inRun !== "everyone") {
+          const have = new Set(inRun)
+          const missing = companyPlan.employees.filter((e) => !have.has(e.employeeProfileId))
+          if (missing.length > 0) {
+            throw new AltomateApiError(
+              "conflict",
+              `AltomateHR left ${missing.map((e) => e.name).join(", ")} out of the ${label} – ${runName} run — they're already in another run this month (posted since this page was reviewed). Take them off this timesheet, then post again — ABPay replaces this draft.`,
+            )
+          }
+        }
 
         // 3. ABPay's figures are final — before payroll is run, or AltomateHR
         //    prorates part-month staff a second time.
