@@ -119,6 +119,12 @@ export type EmployeePlan = {
   currentSalary: number | null
   /** The timesheet Basic when it differs from AltomateHR; else null (no change). */
   newSalary: number | null
+  /**
+   * A joiner's or leaver's part-month Basic, paid for THIS month only — sent as
+   * the run's basic-pay override, so the salary in AltomateHR (and its history)
+   * is left alone. Null for everyone who worked the whole month.
+   */
+  basicThisMonth: number | null
   lines: PlanLine[]
   /** The sheet's Total Gross, for reference. */
   sheetGross: number
@@ -267,11 +273,20 @@ export function planCompany(input: {
       continue
     }
     const current = profile.monthlySalary
-    const newSalary = current != null && round2(current) === basic ? null : basic
+    const sameAsSalary = current != null && round2(current) === basic
 
-    if (inPeriod(profile.joinDate, period) || inPeriod(lastDay(profile), period)) {
+    // A joiner's or leaver's Basic is cut to the days they worked, so it is not
+    // their salary. Recording it as one (go-live testing, Oct 2026) turned a
+    // RM 1,800 joiner into a RM 987.10 salary in AltomateHR's history, with
+    // next month's full Basic showing as a "raise". It is paid for this month
+    // only, and the salary stays as AltomateHR has it.
+    const partMonth = inPeriod(profile.joinDate, period) || inPeriod(lastDay(profile), period)
+    const newSalary = partMonth || sameAsSalary ? null : basic
+    const basicThisMonth = partMonth && !sameAsSalary ? basic : null
+
+    if (partMonth) {
       warnings.push(
-        `${who} ${inPeriod(profile.joinDate, period) ? "joined" : "leaves"} this month: ABPay's figures are final (AltomateHR won't prorate them), so Basic and allowances should already be the part-month amounts.`,
+        `${who} ${inPeriod(profile.joinDate, period) ? "joined" : "leaves"} this month: Basic ${money(basic)} is paid for this month only — their salary in AltomateHR stays ${current != null ? money(current) : "as it is"}. ABPay's figures are final (AltomateHR won't prorate them), so Basic and allowances should already be the part-month amounts.`,
       )
     }
 
@@ -348,6 +363,7 @@ export function planCompany(input: {
       email: profile.email,
       currentSalary: current,
       newSalary,
+      basicThisMonth,
       lines,
       sheetGross: round2(line.totalGross),
     })

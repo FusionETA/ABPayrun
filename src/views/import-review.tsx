@@ -46,6 +46,19 @@ function amountFor(e: EmployeePlan, key: MappableKey) {
 }
 
 function BasicCell({ e }: { e: EmployeePlan }) {
+  if (e.basicThisMonth != null) {
+    return (
+      <span
+        class="whitespace-nowrap"
+        title="Joined or left this month: paid for this month only — the salary in AltomateHR doesn't change"
+      >
+        <span class="font-semibold text-ink">{money(e.basicThisMonth)}</span>{" "}
+        <span class="text-xs text-muted">
+          this month · salary {e.currentSalary != null ? money(e.currentSalary) : "—"} stays
+        </span>
+      </span>
+    )
+  }
   if (e.newSalary == null) {
     return <span class="text-ink">{e.currentSalary != null ? money(e.currentSalary) : "—"}</span>
   }
@@ -267,7 +280,9 @@ export function ImportReviewPage({
         <p class="mt-1.5 text-sm text-muted">
           This is exactly what ABPay will send to AltomateHR. Basic shows the salary change where
           the timesheet differs from AltomateHR — the timesheet wins, and each change is recorded
-          in the person&apos;s salary history from {effectiveFrom}. Each other column is posted as
+          in the person&apos;s salary history from {effectiveFrom}. Someone who joined or left during
+          the month is paid their part-month Basic for this month only — their salary isn&apos;t
+          changed. Each other column is posted as
           the pay item under its name — one row per outlet and group, e.g. &ldquo;Travelling (MA2 / KT)&rdquo;,
           listed under the total. Total Gross is the timesheet&apos;s own figure, for
           comparison.

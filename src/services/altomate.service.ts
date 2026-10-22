@@ -555,9 +555,9 @@ export async function saveRunAdjustment(
   token: string,
   runId: string,
   employeeProfileId: string,
-  input: { manualLineItems: AltomateManualLine[]; notes: string },
-): Promise<void> {
-  await altomateSend(
+  input: { manualLineItems: AltomateManualLine[]; notes: string; basicPayOverride?: number | null },
+): Promise<{ basicPayOverride?: number | null }> {
+  return await altomateSend<{ basicPayOverride?: number | null }>(
     token,
     "PUT",
     `/payroll/runs/${encodeURIComponent(runId)}/adjustments/${encodeURIComponent(employeeProfileId)}`,
@@ -567,6 +567,8 @@ export async function saveRunAdjustment(
       otPublicHours: 0,
       manualLineItems: input.manualLineItems,
       fixedAllowanceOverrides: {},
+      // This month's Basic for a joiner/leaver; null = pay the profile salary.
+      basicPayOverride: input.basicPayOverride ?? null,
       notes: input.notes,
     },
   )

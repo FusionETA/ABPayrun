@@ -485,7 +485,7 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
 
         // 4. Each person's pay lines (PUT replaces, so a retry is idempotent).
         for (const e of companyPlan.employees) {
-          await saveRunAdjustment(token, runId, e.employeeProfileId, {
+          const saved = await saveRunAdjustment(token, runId, e.employeeProfileId, {
             manualLineItems: e.lines.map((l) => ({
               category: l.category,
               // "Travelling (MA2 / KT)", "OT 12.5 hrs (MA2 / KT)" — one row per outlet and group.
@@ -493,8 +493,17 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
               amount: l.amount,
               treatAsRecurring: false,
             })),
+            basicPayOverride: e.basicThisMonth,
             notes: note,
           })
+          // An AltomateHR without the basic-pay override silently drops it and
+          // would pay the joiner's FULL salary. Stop rather than overpay.
+          if (e.basicThisMonth != null && saved?.basicPayOverride == null) {
+            throw new AltomateApiError(
+              "conflict",
+              `AltomateHR didn't accept a part-month Basic for ${e.name}. Update AltomateHR to the latest version, then post again.`,
+            )
+          }
         }
 
         // 5. Run payroll, then check AltomateHR kept ABPay's figures as final.
