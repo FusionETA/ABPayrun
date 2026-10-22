@@ -165,11 +165,14 @@ function CompanyRows({ c }: { c: CompanyValidation }) {
 
 export function ConvertPreview({
   month,
+  name,
   parsed,
   report,
   importId,
 }: {
   month: Period
+  /** The timesheet's name — each company's run is named after it. */
+  name: string
   parsed: ParsedTimesheet
   report: ValidationReport
   importId: number
@@ -183,7 +186,7 @@ export function ConvertPreview({
       <div class="mt-4 mb-6 flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 class="text-2xl font-extrabold tracking-tight text-ink">
-            Preview — {periodLabel(month)}
+            Preview — {periodLabel(month)} – {name}
           </h1>
           <p class="mt-1.5 text-sm text-muted">
             {parsed.totalEmployees} employees across {parsed.companies.length}{" "}

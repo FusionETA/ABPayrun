@@ -78,7 +78,7 @@ export async function migrate(): Promise<void> {
       status        VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
       uploaded_by   VARCHAR(255),
       created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE KEY uq_import_period (period_year, period_month)
+      KEY idx_import_period (period_year, period_month)
     ) ENGINE=InnoDB
   `)
 
@@ -130,6 +130,14 @@ export async function migrate(): Promise<void> {
 
   // A posting result: payslip count, totals, skipped people, salary changes.
   await addColumnIfMissing("posted_run", "summary_json", "JSON NULL")
+
+  // A month can have several timesheets (one per staff group), each posted as
+  // its own AltomateHR run per company, named after the timesheet. So the
+  // one-import-per-month key goes, and an import gets a name. Imports made
+  // before this have none; they show (and post) under their file name.
+  await addColumnIfMissing("import", "name", "VARCHAR(60) NULL")
+  await addIndexIfMissing("import", "idx_import_period", "(period_year, period_month)")
+  await dropIndexIfExists("import", "uq_import_period")
 
   // The uploaded timesheet, parsed, kept between the preview, column-mapping,
   // review and post steps (one per import). Re-uploading replaces it.
@@ -184,6 +192,27 @@ export async function migrate(): Promise<void> {
       PRIMARY KEY (altomate_org_id, kind)
     ) ENGINE=InnoDB
   `)
+}
+
+async function indexExists(table: string, index: string): Promise<boolean> {
+  const [rows] = await pool.query<mysql.RowDataPacket[]>(
+    `SELECT 1 FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table AND INDEX_NAME = :index LIMIT 1`,
+    { table, index },
+  )
+  return rows.length > 0
+}
+
+async function addIndexIfMissing(table: string, index: string, columns: string) {
+  if (!(await indexExists(table, index))) {
+    await pool.query(`ALTER TABLE \`${table}\` ADD INDEX \`${index}\` ${columns}`)
+  }
+}
+
+async function dropIndexIfExists(table: string, index: string) {
+  if (await indexExists(table, index)) {
+    await pool.query(`ALTER TABLE \`${table}\` DROP INDEX \`${index}\``)
+  }
 }
 
 /** `CREATE TABLE IF NOT EXISTS` never adds a column to an existing table. */

@@ -5,6 +5,7 @@ import type { AppEnv } from "../lib/hono-env"
 import { requireAuth } from "../middleware/auth.middleware"
 import { listCompanies } from "../repositories/company.repository"
 import { saveColumnMappings } from "../repositories/mapping.repository"
+import { timesheetName } from "../repositories/import.repository"
 import { listRunsForImport } from "../repositories/run.repository"
 import { AltomateApiError } from "../services/altomate.service"
 import {
@@ -79,6 +80,7 @@ importsRoutes.get("/imports/:id/mapping", requireAuth, async (c) => {
       <ImportMappingPage
         importId={imp.record.id}
         period={imp.period}
+        name={timesheetName(imp.record)}
         columns={columns}
         categories={categories}
       />
@@ -179,6 +181,7 @@ importsRoutes.get("/imports/:id", requireAuth, async (c) => {
       <ImportResultPage
         importId={imp.record.id}
         period={imp.period}
+        name={timesheetName(imp.record)}
         status={imp.record.status}
         companies={rows}
       />

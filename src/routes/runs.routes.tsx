@@ -2,17 +2,20 @@ import { Hono } from "hono"
 
 import type { ParsedTimesheet } from "../domain/timesheet"
 import type { AppEnv } from "../lib/hono-env"
-import { periodLabel, parsePeriodKey, samePeriod } from "../lib/period"
+import { periodKey, periodLabel, parsePeriodKey, samePeriod } from "../lib/period"
 import { requireAuth } from "../middleware/auth.middleware"
 import { listCompanies } from "../repositories/company.repository"
 import {
   createImport,
-  findImportByPeriod,
-  latestImport,
+  listImports,
+  listImportsForPeriod,
+  nameFromFile,
   resetImport,
   saveImportPayload,
+  timesheetName,
 } from "../repositories/import.repository"
 import { resetRunsForImport } from "../repositories/run.repository"
+import { runFileTag } from "../domain/posting"
 import { getRunsOverview } from "../services/runs.service"
 import { parseTimesheet } from "../services/timesheet.service"
 import { validateTimesheet } from "../services/validate.service"
@@ -53,6 +56,14 @@ function convertUploadError(code: string | undefined): string | null {
       return "Couldn't read that file — is it the timesheet .xlsx?"
     case "period":
       return "Choose a payroll month from the list — that month can't be run."
+    case "target":
+      return "That month already has a timesheet — choose whether this is a new one or which one it replaces."
+    case "posting":
+      return "That timesheet is being posted right now — wait for it to finish, then upload again."
+    case "name":
+      return "Give the timesheet a name (it becomes the run name in AltomateHR)."
+    case "duplicate":
+      return "That month already has a timesheet with this name — choose to replace it, or use another name."
     default:
       return null
   }
@@ -82,16 +93,30 @@ runsRoutes.get("/convert", requireAuth, async (c) => {
     }
   }
 
-  // A month that was started but not fully posted: offer to carry on.
-  const last = await latestImport()
-  const resume =
-    last && last.status !== "POSTED"
-      ? {
-          id: last.id,
-          label: periodLabel({ year: last.period_year, month: last.period_month }),
-          status: last.status,
-        }
-      : null
+  // Every timesheet started but not fully posted: offer to carry on with
+  // each — a month can have several.
+  const resume = (await listImports())
+    .filter((imp) => imp.status !== "POSTED")
+    .map((imp) => ({
+      id: imp.id,
+      label: `${periodLabel({ year: imp.period_year, month: imp.period_month })} – ${timesheetName(imp)}`,
+      status: imp.status,
+    }))
+
+  // The timesheets already uploaded for each month on offer: a new upload
+  // for one of those months is either another timesheet or a replacement.
+  const existing = (
+    await Promise.all(
+      overview.choices.map(async (p) =>
+        (await listImportsForPeriod(p.year, p.month)).map((imp) => ({
+          id: imp.id,
+          period: periodKey(p),
+          name: timesheetName(imp),
+          status: imp.status,
+        })),
+      ),
+    )
+  ).flat()
 
   return c.html(
     <Layout
@@ -111,6 +136,8 @@ runsRoutes.get("/convert", requireAuth, async (c) => {
         earliest={overview.earliest}
         reopen={overview.reopen}
         companies={overview.companies.filter((v) => v.connected && !v.error)}
+        existing={existing}
+        addTo={overview.addTo}
         reason={reason}
         uploadError={convertUploadError(c.req.query("uploadError"))}
       />
@@ -155,33 +182,57 @@ runsRoutes.post("/convert", requireAuth, async (c) => {
 
   const report = await validateTimesheet(parsed, companies)
 
-  // Keep the upload as this month's import, so the column-mapping, review
-  // and post steps can come back to it. Uploading a month again starts it
-  // over: posting replaces the draft runs ABPay made for it (their ids are
-  // kept for that) and leaves any company already approved alone. Only an
-  // import being posted right now has to finish first.
-  const existing = await findImportByPeriod(allowed.year, allowed.month)
-  if (existing?.status === "POSTING") {
-    const msg = `${periodLabel(allowed)} is being posted right now — wait for it to finish.`
-    return c.redirect(`/convert?err=${encodeURIComponent(msg)}`)
+  // Keep the upload as a timesheet of the month, so the column-mapping,
+  // review and post steps can come back to it. A month can have several
+  // timesheets, each posted as its own run per company and named after it;
+  // the form says whether this is another one or which one it replaces.
+  // Replacing starts that timesheet over: posting replaces the draft runs
+  // ABPay made for it (their ids are kept for that) and leaves any company
+  // already approved alone. Only a timesheet being posted right now has to
+  // finish first.
+  const monthImports = await listImportsForPeriod(allowed.year, allowed.month)
+  const target = String(body["target"] ?? "")
+  const replacing =
+    target && target !== "new" ? monthImports.find((i) => String(i.id) === target) : undefined
+  // A corrected copy keeps its timesheet's name unless another is typed.
+  const typed = String(body["name"] ?? "").replace(/\s+/g, " ").trim()
+  const name = (typed || (replacing ? timesheetName(replacing) : nameFromFile(file.name)))
+    .slice(0, 60)
+    .trim()
+  if (!name) return c.redirect("/convert?uploadError=name")
+  if (monthImports.length > 0 && !replacing && target !== "new") {
+    return c.redirect("/convert?uploadError=target")
   }
+  if (replacing?.status === "POSTING") return c.redirect("/convert?uploadError=posting")
+  // Two timesheets of a month can't share a name — nor names AltomateHR
+  // would file the same way ("Kitchen 1" / "Kitchen-1").
+  const clash = monthImports.find(
+    (i) =>
+      i.id !== replacing?.id &&
+      (timesheetName(i).toLowerCase() === name.toLowerCase() ||
+        (runFileTag(name) !== "" &&
+          runFileTag(timesheetName(i)).toLowerCase() === runFileTag(name).toLowerCase())),
+  )
+  if (clash) return c.redirect("/convert?uploadError=duplicate")
+
   const importId =
-    existing?.id ??
+    replacing?.id ??
     (await createImport({
       periodYear: allowed.year,
       periodMonth: allowed.month,
+      name,
       filename: file.name,
       uploadedBy: user.email,
     }))
-  if (existing) {
-    await resetImport(existing.id, { filename: file.name, uploadedBy: user.email })
-    await resetRunsForImport(existing.id)
+  if (replacing) {
+    await resetImport(replacing.id, { name, filename: file.name, uploadedBy: user.email })
+    await resetRunsForImport(replacing.id)
   }
   await saveImportPayload(importId, JSON.stringify(parsed))
 
   return c.html(
     <Layout title="Preview" user={{ name: user.name, email: user.email }}>
-      <ConvertPreview month={allowed} parsed={parsed} report={report} importId={importId} />
+      <ConvertPreview month={allowed} name={name} parsed={parsed} report={report} importId={importId} />
     </Layout>,
   )
 })

@@ -403,14 +403,17 @@ export type ExistingRun = {
 }
 
 /**
- * What posting `period` does with a company's runs. `ownRunId` is the run
- * an earlier upload of this month made (from ABPay's records), if any.
- *   - the month is approved (SUBMITTED) → "approved": left alone;
- *   - the month has ABPay's draft run → "replace" it (one awaiting approval
- *     must go back to draft in AltomateHR first — it's flagged as a problem);
- *   - no run for the month → "create" one.
- * Plus what stops it: a later month already run, a run for the month that
- * ABPay didn't make, or an earlier month not approved yet.
+ * What posting `period` does with a company's runs. A month can hold several
+ * runs — one per timesheet — so ABPay only ever looks at its OWN run:
+ * `ownRunId` is the run an earlier upload of this timesheet made (from
+ * ABPay's records), if any. Other runs in the month are left alone.
+ *   - its own run is approved (SUBMITTED) → "approved": left alone;
+ *   - it has its own draft → "replace" it (one awaiting approval must go
+ *     back to draft in AltomateHR first — it's flagged as a problem);
+ *   - otherwise → "create" one.
+ * Plus what stops it: a later month already run, or an earlier month with a
+ * run that isn't approved yet. Whether anyone on the timesheet is already in
+ * another of the month's runs is `alreadyInOtherRuns`.
  */
 export function decideRun<R extends ExistingRun>(
   runs: R[],
@@ -420,11 +423,17 @@ export function decideRun<R extends ExistingRun>(
   const of = (r: R): Period => ({ year: r.periodYear, month: r.periodMonth })
   const newestFirst = [...runs].sort((x, y) => comparePeriods(of(y), of(x)))
   const later = newestFirst.find((r) => comparePeriods(of(r), period) > 0)
-  const same = runs.find((r) => comparePeriods(of(r), period) === 0) ?? null
+  const own = (ownRunId && runs.find((r) => r.id === ownRunId)) || null
   const earlier = newestFirst.find((r) => comparePeriods(of(r), period) < 0)
+  // Every run of the newest earlier month — with several, all must be approved.
+  const earlierOpen = earlier
+    ? runs.find(
+        (r) => comparePeriods(of(r), of(earlier)) === 0 && r.status !== "SUBMITTED",
+      )
+    : undefined
   const label = periodLabel(period)
 
-  if (same?.status === "SUBMITTED") return { action: "approved", existing: same, problems: [] }
+  if (own?.status === "SUBMITTED") return { action: "approved", existing: own, problems: [] }
 
   const problems: string[] = []
   if (later) {
@@ -432,21 +441,74 @@ export function decideRun<R extends ExistingRun>(
       `AltomateHR already has a ${periodLabel(of(later))} run, so ${label} can't be posted any more.`,
     )
   }
-  if (same && same.id === ownRunId && same.status === "PENDING_APPROVAL") {
+  if (own?.status === "PENDING_APPROVAL") {
     // AltomateHR only deletes a draft, so posting would fail at the delete.
     problems.push(
-      `${label} is awaiting approval in AltomateHR, so ABPay can't replace it — send it back to draft there (or approve it as it is), then reload this page.`,
+      `This timesheet's ${label} run is awaiting approval in AltomateHR, so ABPay can't replace it — send it back to draft there (or approve it as it is), then reload this page.`,
     )
   }
-  if (same && same.id !== ownRunId) {
+  if (earlierOpen) {
     problems.push(
-      `AltomateHR has a ${label} run ABPay didn't make, so ABPay won't replace it. Delete it in AltomateHR, then reload this page.`,
+      `${periodLabel(of(earlierOpen))} isn't approved yet — submit it in AltomateHR before ${label} can be posted.`,
     )
   }
-  if (earlier && earlier.status !== "SUBMITTED") {
-    problems.push(
-      `${periodLabel(of(earlier))} isn't approved yet — submit it in AltomateHR before ${label} can be posted.`,
-    )
+  return { action: own ? "replace" : "create", existing: own, problems }
+}
+
+/**
+ * The part of a run name AltomateHR puts in file names: letters and digits
+ * only, at most 30. Two runs in a month may not share it (AltomateHR refuses
+ * the second), so ABPay checks it before posting anything.
+ */
+export function runFileTag(name: string): string {
+  return name.replace(/[^A-Za-z0-9]/g, "").slice(0, 30)
+}
+
+/** Why `name` can't sit beside the month's other runs, or null. */
+export function runNameClash(
+  name: string,
+  others: { name: string | null; label: string }[],
+): string | null {
+  const tag = runFileTag(name).toLowerCase()
+  for (const other of others) {
+    if (!other.name) continue
+    if (other.name.trim().toLowerCase() === name.trim().toLowerCase()) {
+      return `AltomateHR already has a ${other.label} run, so this timesheet needs another name — upload it again with a different timesheet name.`
+    }
+    if (tag && runFileTag(other.name).toLowerCase() === tag) {
+      return `The timesheet name “${name}” is too close to AltomateHR's ${other.label} run — their files would get the same name. Upload it again with a more different timesheet name.`
+    }
   }
-  return { action: same ? "replace" : "create", existing: same, problems }
+  return null
+}
+
+/** Another run of the month, and who it's for ("everyone": a run with no list). */
+export type OtherRun = { label: string; people: string[] | "everyone" }
+
+/**
+ * The timesheet is refused while anyone on it is already in another of the
+ * month's runs — a person is paid in only one run a month. One problem per
+ * run, naming the people.
+ */
+export function alreadyInOtherRuns(
+  people: { employeeProfileId: string; name: string }[],
+  others: OtherRun[],
+): string[] {
+  const problems: string[] = []
+  for (const other of others) {
+    if (other.people === "everyone") {
+      problems.push(
+        `AltomateHR's ${other.label} run covers everyone in the company, so this timesheet can't add another run for the month. Narrow or delete that run in AltomateHR first.`,
+      )
+      continue
+    }
+    const taken = new Set(other.people)
+    const clash = people.filter((p) => taken.has(p.employeeProfileId)).map((p) => p.name)
+    if (clash.length > 0) {
+      problems.push(
+        `${clash.join(", ")} ${clash.length === 1 ? "is" : "are"} already in AltomateHR's ${other.label} run — a person can be paid in only one run a month. Take them off this timesheet — or, if this is a corrected copy of that timesheet, upload it as a replacement of it.`,
+      )
+    }
+  }
+  return problems
 }

@@ -6,6 +6,8 @@ export type ImportRecord = {
   id: number
   period_year: number
   period_month: number
+  /** The timesheet's name — also each company's AltomateHR run name. */
+  name: string | null
   filename: string | null
   status: string
   uploaded_by: string | null
@@ -27,29 +29,43 @@ export async function getImport(id: number): Promise<ImportRecord | undefined> {
   return rows[0] as ImportRecord | undefined
 }
 
-export async function findImportByPeriod(
-  year: number,
-  month: number,
-): Promise<ImportRecord | undefined> {
+/** A month's timesheets, oldest first. */
+export async function listImportsForPeriod(year: number, month: number): Promise<ImportRecord[]> {
   const [rows] = await pool.query<RowDataPacket[]>(
-    "SELECT * FROM import WHERE period_year = :year AND period_month = :month",
+    "SELECT * FROM import WHERE period_year = :year AND period_month = :month ORDER BY id",
     { year, month },
   )
-  return rows[0] as ImportRecord | undefined
+  return rows as ImportRecord[]
+}
+
+/**
+ * The name a timesheet shows and posts under: its own name, or — for one
+ * uploaded before timesheets had names — its file name without the extension.
+ */
+export function timesheetName(record: Pick<ImportRecord, "name" | "filename">): string {
+  return record.name?.trim() || nameFromFile(record.filename) || "Timesheet"
+}
+
+/** "Payroll July (Kitchen).xlsx" → "Payroll July (Kitchen)", at most 60 characters. */
+export function nameFromFile(filename: string | null | undefined): string {
+  const base = (filename ?? "").replace(/\.[^.]+$/, "").replace(/\s+/g, " ").trim()
+  return base.slice(0, 60).trim()
 }
 
 export async function createImport(input: {
   periodYear: number
   periodMonth: number
+  name: string
   filename?: string | null
   uploadedBy?: string | null
 }): Promise<number> {
   const [result] = await pool.query<ResultSetHeader>(
-    `INSERT INTO import (period_year, period_month, filename, uploaded_by)
-     VALUES (:periodYear, :periodMonth, :filename, :uploadedBy)`,
+    `INSERT INTO import (period_year, period_month, name, filename, uploaded_by)
+     VALUES (:periodYear, :periodMonth, :name, :filename, :uploadedBy)`,
     {
       periodYear: input.periodYear,
       periodMonth: input.periodMonth,
+      name: input.name,
       filename: input.filename ?? null,
       uploadedBy: input.uploadedBy ?? null,
     },
@@ -61,23 +77,15 @@ export async function updateImportStatus(id: number, status: string): Promise<vo
   await pool.query("UPDATE import SET status = :status WHERE id = :id", { status, id })
 }
 
-/** The most recent import, whatever its status (for "resume" links). */
-export async function latestImport(): Promise<ImportRecord | undefined> {
-  const [rows] = await pool.query<RowDataPacket[]>(
-    "SELECT * FROM import ORDER BY period_year DESC, period_month DESC, id DESC LIMIT 1",
-  )
-  return rows[0] as ImportRecord | undefined
-}
-
-/** Start the month's import again from a new upload: new file, back to DRAFT. */
+/** Start a timesheet again from a new upload: new file (and name), back to DRAFT. */
 export async function resetImport(
   id: number,
-  input: { filename: string | null; uploadedBy: string | null },
+  input: { name: string; filename: string | null; uploadedBy: string | null },
 ): Promise<void> {
   await pool.query(
-    `UPDATE import SET filename = :filename, uploaded_by = :uploadedBy, status = 'DRAFT'
+    `UPDATE import SET name = :name, filename = :filename, uploaded_by = :uploadedBy, status = 'DRAFT'
      WHERE id = :id`,
-    { id, filename: input.filename, uploadedBy: input.uploadedBy },
+    { id, name: input.name, filename: input.filename, uploadedBy: input.uploadedBy },
   )
 }
 

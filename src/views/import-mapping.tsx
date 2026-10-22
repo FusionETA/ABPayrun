@@ -33,11 +33,13 @@ const CELL = "px-3 py-3"
 export function ImportMappingPage({
   importId,
   period,
+  name,
   columns,
   categories,
 }: {
   importId: number
   period: Period
+  name: string
   columns: MappingColumnRow[]
   categories: AltomateAdjustmentCategory[]
 }) {
@@ -48,7 +50,7 @@ export function ImportMappingPage({
       </a>
       <div class="mt-4 mb-6">
         <h1 class="text-2xl font-extrabold tracking-tight text-ink">
-          Map columns — {periodLabel(period)}
+          Map columns — {periodLabel(period)} – {name}
         </h1>
         <p class="mt-1.5 text-sm text-muted">
           Choose what each timesheet column is posted as in AltomateHR. The pay item decides
