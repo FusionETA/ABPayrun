@@ -24,7 +24,7 @@ export type EmployeeMatch = {
   altomateId: string | null
   altomateName: string | null
   /** How it matched, for the preview. */
-  method: "code" | "name" | null
+  method: "code" | "name" | "nickname" | null
   /** Why it didn't match, when there's more to say than "not found". */
   reason?: string
 }
@@ -33,6 +33,8 @@ export type MatchableEmployee = {
   id: string
   name: string
   employeeId: string
+  /** What colleagues call them ("Ivy"); matched like the name. */
+  nickname?: string | null
 }
 
 /**
@@ -67,7 +69,12 @@ export function matchEmployee(
       // An unrelated namesake (say, a former employee called just "Siti")
       // says nothing about whether the code is wrong.
       const target = normalizeName(line.name)
-      if (target && normalizeName(byCode.name) !== target) {
+      // The row's name being their nickname counts as their name too.
+      if (
+        target &&
+        normalizeName(byCode.name) !== target &&
+        normalizeName(byCode.nickname ?? "") !== target
+      ) {
         const others = employees.filter(
           (e) =>
             e.id !== byCode.id &&
@@ -96,11 +103,23 @@ export function matchEmployee(
 
   const target = normalizeName(line.name)
   if (target) {
-    const matches = employees.filter((e) => normalizeName(e.name) === target)
-    // Exactly one name match → accept. Zero or >1 (ambiguous) → unmatched.
+    // The row's name against each person's full name OR nickname — a
+    // timesheet often writes "Ivy" for Ivy Tan Mei Ling. Exactly one person
+    // → accept. Zero, or more than one (two people called Ivy, or a nickname
+    // that is someone else's full name) → unmatched, so posting is blocked
+    // rather than paying the wrong person.
+    const byName = (e: MatchableEmployee) => normalizeName(e.name) === target
+    const byNickname = (e: MatchableEmployee) =>
+      !!e.nickname && normalizeName(e.nickname) === target
+    const matches = employees.filter((e) => byName(e) || byNickname(e))
     if (matches.length === 1) {
       const m = matches[0]!
-      return { matched: true, altomateId: m.id, altomateName: m.name, method: "name" }
+      return {
+        matched: true,
+        altomateId: m.id,
+        altomateName: m.name,
+        method: byName(m) ? "name" : "nickname",
+      }
     }
   }
 

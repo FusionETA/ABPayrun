@@ -282,6 +282,12 @@ export type AltomateEmployee = {
   name: string
   /** The employee number — what the timesheet's staff code matches. */
   employeeId: string
+  /**
+   * What colleagues call them in that company ("Ivy"), set in AltomateHR.
+   * Matched like the full name when a row has no usable staff code. Null
+   * from an AltomateHR without nicknames.
+   */
+  nickname: string | null
 }
 
 /**
@@ -290,11 +296,22 @@ export type AltomateEmployee = {
  */
 export async function listEmployees(token: string): Promise<AltomateEmployee[]> {
   const data = await altomateGet<
-    Array<{ id: string; name: string; employeeNumber?: string | null; role: string }>
+    Array<{
+      id: string
+      name: string
+      employeeNumber?: string | null
+      nickname?: string | null
+      role: string
+    }>
   >(token, "/employees", "Token can't read employees (missing employees:read scope).")
   return data
     .filter((e) => e.role === "Employee" || e.role === "Supervisor")
-    .map((e) => ({ id: e.id, name: e.name, employeeId: e.employeeNumber ?? "" }))
+    .map((e) => ({
+      id: e.id,
+      name: e.name,
+      employeeId: e.employeeNumber ?? "",
+      nickname: e.nickname?.trim() || null,
+    }))
 }
 
 /** One AltomateHR project, trimmed to what matching needs. */
