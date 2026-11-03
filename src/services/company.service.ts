@@ -3,20 +3,36 @@ import * as companyRepo from "../repositories/company.repository"
 import { whoami, type AltomateOrg } from "./altomate.service"
 
 /**
- * Reconcile ABPay's company list to exactly the owner's AltomateHR
- * companies (called at login and on Refresh): upsert each org, then drop any
- * stale rows no longer in the owner's list. Guarded on a non-empty list so a
- * transient empty response never wipes connected companies + tokens.
+ * Reconcile ABPay's company list with the signed-in person's AltomateHR
+ * companies (called at login and on Refresh): upsert each org, then — only
+ * for an owner — drop stale rows no longer in their list. The list is shared
+ * by everyone, and an admin's list is just the companies they administer, so
+ * an admin signing in must never remove the others. Guarded on a non-empty
+ * list so a transient empty response never wipes connected companies +
+ * tokens.
  */
-export async function syncOwnerCompanies(orgs: AltomateOrg[]): Promise<void> {
+export async function syncOwnerCompanies(
+  orgs: AltomateOrg[],
+  sessionRole: string,
+): Promise<void> {
   for (const o of orgs) {
     await companyRepo.upsertCompany({ altomateOrgId: o.id, name: o.name })
   }
-  if (orgs.length > 0) {
+  if (orgs.length > 0 && isOwnerOfAll(orgs, sessionRole)) {
     const ids = orgs.map((o) => o.id)
     await companyRepo.deleteCompaniesNotIn(ids)
     await removeDeletedConnectedCompanies(ids)
   }
+}
+
+/**
+ * Owner of every company in the list. An AltomateHR without per-company
+ * roles (before Manage-access support) only gives the sign-in role.
+ */
+function isOwnerOfAll(orgs: AltomateOrg[], sessionRole: string): boolean {
+  return orgs.every((o) =>
+    o.role ? o.role.toUpperCase() === "OWNER" : sessionRole.toUpperCase() === "OWNER",
+  )
 }
 
 /**

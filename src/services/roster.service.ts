@@ -5,6 +5,7 @@ import {
   cachedProjects,
   type CacheOptions,
 } from "./altomate-cache.service"
+import { visibleEmployees, type CompanyAccess } from "./access.service"
 import { AltomateApiError } from "./altomate.service"
 
 export type CompanyRoster = {
@@ -14,6 +15,25 @@ export type CompanyRoster = {
   syncedAt: string
   /** Human error (bad scope / token) if the pull failed, else null. */
   error: string | null
+  /** The viewer's Manage access turns projects off for them. */
+  projectsHidden?: boolean
+}
+
+/**
+ * A roster narrowed to what one person may see: only the employees their
+ * Manage access allows, and no projects when that module is off for them.
+ */
+export function rosterFor(
+  roster: CompanyRoster | null,
+  access: CompanyAccess | null,
+): CompanyRoster | null {
+  if (!roster) return null
+  return {
+    ...roster,
+    employees: visibleEmployees(roster.employees, access),
+    projects: access?.showProjects ? roster.projects : [],
+    projectsHidden: !access?.showProjects,
+  }
 }
 
 /**

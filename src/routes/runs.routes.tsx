@@ -16,7 +16,13 @@ import {
 } from "../repositories/import.repository"
 import { resetRunsForImport } from "../repositories/run.repository"
 import { runFileTag } from "../domain/posting"
-import { getRunsOverview } from "../services/runs.service"
+import {
+  companiesWithoutPayroll,
+  loadAccess,
+  noPayrollMessage,
+  type Access,
+} from "../services/access.service"
+import { getRunsOverview, type RunsOverview } from "../services/runs.service"
 import { parseTimesheet } from "../services/timesheet.service"
 import { validateTimesheet } from "../services/validate.service"
 import { ConvertPage } from "../views/convert"
@@ -26,12 +32,31 @@ import { RunsPage } from "../views/runs"
 
 export const runsRoutes = new Hono<AppEnv>()
 
+/**
+ * The runs overview as this person may see it: only their companies, the
+ * ones they can't run payroll for listed in `noPayroll` (their runs and pay
+ * stay hidden), and whether they can run payroll anywhere.
+ */
+function overviewFor(overview: RunsOverview, access: Access) {
+  const companies = overview.companies.filter((v) => access.canSee(v.company.altomate_org_id))
+  const noPayroll = new Set(
+    companies
+      .filter((v) => !access.canRunPayroll(v.company.altomate_org_id))
+      .map((v) => v.company.altomate_org_id),
+  )
+  const canUpload = companies.some(
+    (v) => v.connected && !v.error && !noPayroll.has(v.company.altomate_org_id),
+  )
+  return { overview: { ...overview, companies }, noPayroll, canUpload }
+}
+
 /** Dashboard: per-company payroll runs from AltomateHR + the next month. */
 runsRoutes.get("/", requireAuth, async (c) => {
   const user = c.get("user")
-  const overview = await getRunsOverview()
+  const access = c.get("access")
+  const { overview, noPayroll, canUpload } = overviewFor(await getRunsOverview(), access)
   const ok = c.req.query("ok")
-  const err = c.req.query("err")
+  const err = c.req.query("err") ?? access.error ?? undefined
   const flash = ok
     ? ({ type: "ok", msg: ok } as const)
     : err
@@ -43,7 +68,7 @@ runsRoutes.get("/", requireAuth, async (c) => {
       user={{ name: user.name, email: user.email }}
       flash={flash}
     >
-      <RunsPage overview={overview} />
+      <RunsPage overview={overview} noPayroll={noPayroll} canUpload={canUpload} />
     </Layout>,
   )
 })
@@ -78,10 +103,19 @@ function convertUploadError(code: string | undefined): string | null {
  */
 runsRoutes.get("/convert", requireAuth, async (c) => {
   const user = c.get("user")
-  const overview = await getRunsOverview()
+  const access = c.get("access")
+  const view = overviewFor(await getRunsOverview(), access)
+  // Nothing to upload for someone without payroll access anywhere.
+  const overview = view.canUpload || view.overview.loadedCount === 0
+    ? view.overview
+    : { ...view.overview, choices: [] }
 
   let reason: string | null = null
-  if (overview.choices.length === 0) {
+  if (!view.canUpload && view.overview.loadedCount > 0) {
+    reason =
+      access.error ??
+      "Your access in AltomateHR doesn't include running payroll for any of your companies."
+  } else if (overview.choices.length === 0) {
     if (overview.loadedCount === 0) {
       reason =
         "No companies are connected yet — connect one on the Companies page first."
@@ -95,7 +129,7 @@ runsRoutes.get("/convert", requireAuth, async (c) => {
 
   // Every timesheet started but not fully posted: offer to carry on with
   // each — a month can have several.
-  const resume = (await listImports())
+  const resume = (view.canUpload ? await listImports() : [])
     .filter((imp) => imp.status !== "POSTED")
     .map((imp) => ({
       id: imp.id,
@@ -135,7 +169,9 @@ runsRoutes.get("/convert", requireAuth, async (c) => {
         choices={overview.choices}
         earliest={overview.earliest}
         reopen={overview.reopen}
-        companies={overview.companies.filter((v) => v.connected && !v.error)}
+        companies={overview.companies.filter(
+          (v) => v.connected && !v.error && !view.noPayroll.has(v.company.altomate_org_id),
+        )}
         existing={existing}
         addTo={overview.addTo}
         reason={reason}
@@ -155,6 +191,7 @@ runsRoutes.post("/convert", requireAuth, async (c) => {
   const user = c.get("user")
   const overview = await getRunsOverview()
   if (overview.choices.length === 0) return c.redirect("/convert")
+  if (!overviewFor(overview, c.get("access")).canUpload) return c.redirect("/convert")
 
   const body = await c.req.parseBody()
   // Only a month the list offers is accepted; the list is rebuilt from live
@@ -178,6 +215,19 @@ runsRoutes.post("/convert", requireAuth, async (c) => {
   } catch (err) {
     console.error("[abpay] timesheet parse failed:", err)
     return c.redirect("/convert?uploadError=parse")
+  }
+
+  // Every company on the sheet must be one they may run payroll for — asked
+  // afresh, and before anything is saved or shown: the preview shows pay.
+  const access = await loadAccess(user, { fresh: true })
+  if (access.error) return c.redirect(`/convert?err=${encodeURIComponent(access.error)}`)
+  const blocked = companiesWithoutPayroll(
+    access,
+    companies,
+    parsed.companies.map((g) => g.company),
+  )
+  if (blocked.length > 0) {
+    return c.redirect(`/convert?err=${encodeURIComponent(noPayrollMessage(blocked))}`)
   }
 
   const report = await validateTimesheet(parsed, companies)

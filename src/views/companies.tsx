@@ -59,7 +59,9 @@ function RosterCells({ roster }: { roster: CompanyRoster | null }) {
   return (
     <>
       <td class={`${cell} font-semibold text-ink`}>{roster.employees.length}</td>
-      <td class={`${cell} font-semibold text-ink`}>{roster.projects.length}</td>
+      <td class={`${cell} font-semibold text-ink`}>
+        {roster.projectsHidden ? "—" : roster.projects.length}
+      </td>
       <td class={`${cell} text-muted`}>{roster.syncedAt ? roster.syncedAt.slice(11, 16) : "—"}</td>
     </>
   )

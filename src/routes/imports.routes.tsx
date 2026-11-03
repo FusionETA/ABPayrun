@@ -1,4 +1,4 @@
-import { Hono } from "hono"
+import { Hono, type Context } from "hono"
 
 import { MAPPABLE_COLUMNS } from "../domain/posting"
 import type { AppEnv } from "../lib/hono-env"
@@ -7,6 +7,11 @@ import { listCompanies } from "../repositories/company.repository"
 import { saveColumnMappings } from "../repositories/mapping.repository"
 import { timesheetName } from "../repositories/import.repository"
 import { listRunsForImport } from "../repositories/run.repository"
+import {
+  companiesWithoutPayroll,
+  loadAccess,
+  noPayrollMessage,
+} from "../services/access.service"
 import { AltomateApiError } from "../services/altomate.service"
 import {
   buildPostingPlan,
@@ -14,6 +19,7 @@ import {
   loadImport,
   loadMappableCategories,
   postImport,
+  type LoadedImport,
 } from "../services/posting.service"
 import { ImportMappingPage } from "../views/import-mapping"
 import { ImportResultPage } from "../views/import-result"
@@ -42,6 +48,26 @@ function flashFrom(ok: string | undefined, err: string | undefined) {
       : null
 }
 
+/**
+ * Why this person may not work on this timesheet — it includes a company
+ * they can't run payroll for in AltomateHR — or null. Every step checks:
+ * each page shows pay, and posting asks AltomateHR afresh.
+ */
+async function payrollBlock(
+  c: Context<AppEnv>,
+  imp: LoadedImport,
+  fresh = false,
+): Promise<string | null> {
+  const access = fresh ? await loadAccess(c.get("user"), { fresh: true }) : c.get("access")
+  if (access.error) return access.error
+  const blocked = companiesWithoutPayroll(
+    access,
+    await listCompanies(),
+    imp.parsed.companies.map((g) => g.company),
+  )
+  return blocked.length > 0 ? noPayrollMessage(blocked) : null
+}
+
 function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100
 }
@@ -51,6 +77,8 @@ importsRoutes.get("/imports/:id/mapping", requireAuth, async (c) => {
   const id = importId(c.req.param("id"))
   const imp = id ? await loadImport(id) : null
   if (!imp) return c.redirect("/convert")
+  const block = await payrollBlock(c, imp)
+  if (block) return c.redirect(`/?err=${encodeURIComponent(block)}`)
 
   let categories
   try {
@@ -91,7 +119,10 @@ importsRoutes.get("/imports/:id/mapping", requireAuth, async (c) => {
 importsRoutes.post("/imports/:id/mapping", requireAuth, async (c) => {
   const user = c.get("user")
   const id = importId(c.req.param("id"))
-  if (!id) return c.redirect("/convert")
+  const imp = id ? await loadImport(id) : null
+  if (!imp) return c.redirect("/convert")
+  const block = await payrollBlock(c, imp)
+  if (block) return c.redirect(`/?err=${encodeURIComponent(block)}`)
 
   const body = await c.req.parseBody()
   // Only codes AltomateHR actually offers are saved; anything else (a
@@ -110,7 +141,10 @@ importsRoutes.post("/imports/:id/mapping", requireAuth, async (c) => {
 importsRoutes.get("/imports/:id/review", requireAuth, async (c) => {
   const user = c.get("user")
   const id = importId(c.req.param("id"))
-  if (!id) return c.redirect("/convert")
+  const imp = id ? await loadImport(id) : null
+  if (!id || !imp) return c.redirect("/convert")
+  const block = await payrollBlock(c, imp)
+  if (block) return c.redirect(`/?err=${encodeURIComponent(block)}`)
 
   let plan
   let categories
@@ -137,7 +171,17 @@ importsRoutes.get("/imports/:id/review", requireAuth, async (c) => {
 importsRoutes.post("/imports/:id/post", requireAuth, async (c) => {
   const user = c.get("user")
   const id = importId(c.req.param("id"))
-  if (!id) return c.redirect("/convert")
+  const imp = id ? await loadImport(id) : null
+  if (!id || !imp) return c.redirect("/convert")
+  // ABPay posts with the company's own key, so AltomateHR can't tell who is
+  // posting: this check, asked afresh, is the only gate.
+  let block
+  try {
+    block = await payrollBlock(c, imp, true)
+  } catch (err) {
+    block = err instanceof AltomateApiError ? err.message : "Couldn't check your access in AltomateHR."
+  }
+  if (block) return c.redirect(`/imports/${id}/review?err=${encodeURIComponent(block)}`)
 
   let outcome
   try {
@@ -161,6 +205,8 @@ importsRoutes.get("/imports/:id", requireAuth, async (c) => {
   const id = importId(c.req.param("id"))
   const imp = id ? await loadImport(id) : null
   if (!imp) return c.redirect("/convert")
+  const block = await payrollBlock(c, imp)
+  if (block) return c.redirect(`/?err=${encodeURIComponent(block)}`)
 
   const [runs, companies] = await Promise.all([listRunsForImport(imp.record.id), listCompanies()])
   const nameOf = new Map(

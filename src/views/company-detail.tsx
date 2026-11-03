@@ -160,12 +160,14 @@ export function CompanyDetailPage({
               label="Employees"
               count={roster.employees.length}
             />
-            <Tab
-              href={`${base}?tab=projects`}
-              active={tab === "projects"}
-              label="Projects"
-              count={roster.projects.length}
-            />
+            {roster.projectsHidden ? null : (
+              <Tab
+                href={`${base}?tab=projects`}
+                active={tab === "projects"}
+                label="Projects"
+                count={roster.projects.length}
+              />
+            )}
           </div>
 
           {/* Search (GET, keeps the current tab, resets to page 1) */}

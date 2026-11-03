@@ -1,3 +1,4 @@
+import type { Access } from "../services/access.service"
 import type { SessionPayload } from "./jwt"
 
 /**
@@ -7,5 +8,7 @@ import type { SessionPayload } from "./jwt"
 export type AppEnv = {
   Variables: {
     user: SessionPayload
+    /** What the signed-in person may reach (AltomateHR Manage access). */
+    access: Access
   }
 }

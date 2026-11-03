@@ -227,10 +227,11 @@ function NextCell({ view }: { view: CompanyRunsView }) {
  * One row per company with its latest run. Earlier runs are hidden rows in
  * the same columns, opened with the chevron.
  */
-function CompanyRows({ view }: { view: CompanyRunsView }) {
+function CompanyRows({ view, payroll }: { view: CompanyRunsView; payroll: boolean }) {
   const { company, connected, runs, error } = view
-  const latest = connected && !error ? runs[0] : undefined
-  const earlier = connected && !error ? runs.slice(1) : []
+  // Without payroll access in AltomateHR, none of the company's pay shows.
+  const latest = payroll && connected && !error ? runs[0] : undefined
+  const earlier = payroll && connected && !error ? runs.slice(1) : []
   const group = `runs-${company.altomate_org_id}`
 
   return (
@@ -254,17 +255,19 @@ function CompanyRows({ view }: { view: CompanyRunsView }) {
             </div>
           ) : error ? (
             <div class="text-xs font-medium text-red-700">{error}</div>
-          ) : !view.ready && view.blockedReason ? (
+          ) : payroll && !view.ready && view.blockedReason ? (
             <div class="text-xs text-amber-700">{view.blockedReason}</div>
           ) : null}
         </td>
         {latest ? (
           <RunCells run={latest} />
         ) : (
-          <EmptyRunCells label={connected && !error ? "No runs yet" : "—"} />
+          <EmptyRunCells
+            label={!payroll ? "No payroll access" : connected && !error ? "No runs yet" : "—"}
+          />
         )}
         <td class={CELL}>
-          <NextCell view={view} />
+          {payroll ? <NextCell view={view} /> : <span class="text-muted">—</span>}
         </td>
         <td class={`${CELL} w-10 text-right`}>
           {earlier.length > 0 ? (
@@ -295,7 +298,32 @@ function CompanyRows({ view }: { view: CompanyRunsView }) {
   )
 }
 
-export function RunsPage({ overview }: { overview: RunsOverview }) {
+/** Shown instead of the next-run banner to someone who can't run payroll. */
+function NoPayrollBanner() {
+  return (
+    <div class="glass rounded-3xl p-6">
+      <h2 class="text-base font-bold text-ink">No payroll access</h2>
+      <p class="mt-1 text-sm text-muted">
+        Your access in AltomateHR doesn&apos;t include running payroll for these companies, so
+        their runs and pay aren&apos;t shown here. Ask the owner if you need it.
+      </p>
+    </div>
+  )
+}
+
+/**
+ * `noPayroll`: companies the viewer can see but may not run payroll for —
+ * their runs aren't shown. `canUpload`: they may run payroll somewhere.
+ */
+export function RunsPage({
+  overview,
+  noPayroll = new Set<string>(),
+  canUpload = true,
+}: {
+  overview: RunsOverview
+  noPayroll?: Set<string>
+  canUpload?: boolean
+}) {
   return (
     <div>
       <div class="mb-6">
@@ -308,7 +336,11 @@ export function RunsPage({ overview }: { overview: RunsOverview }) {
       </div>
 
       <div class="mb-6">
-        <NextRunBanner overview={overview} />
+        {canUpload || overview.loadedCount === 0 ? (
+          <NextRunBanner overview={overview} />
+        ) : (
+          <NoPayrollBanner />
+        )}
       </div>
 
       {overview.companies.length > 0 ? (
@@ -331,7 +363,10 @@ export function RunsPage({ overview }: { overview: RunsOverview }) {
               </thead>
               <tbody>
                 {overview.companies.map((view) => (
-                  <CompanyRows view={view} />
+                  <CompanyRows
+                    view={view}
+                    payroll={!noPayroll.has(view.company.altomate_org_id)}
+                  />
                 ))}
               </tbody>
             </table>

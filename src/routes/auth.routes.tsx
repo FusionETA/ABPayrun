@@ -4,6 +4,7 @@ import { deleteCookie, setCookie } from "hono/cookie"
 import { config } from "../config"
 import { issueSession, sessionTtlSeconds } from "../lib/jwt"
 import { login, type AltomateUser } from "../services/auth.service"
+import { forgetAccess } from "../services/access.service"
 import { syncOwnerCompanies } from "../services/company.service"
 import { Layout } from "../views/layout"
 import { LoginPage } from "../views/login"
@@ -77,7 +78,8 @@ authRoutes.post("/login", async (c) => {
   // Pull the owner's AltomateHR companies into ABPay so they can connect a
   // token to each. Best-effort — login still succeeds if the sync fails.
   try {
-    await syncOwnerCompanies(user.organizations)
+    await syncOwnerCompanies(user.organizations, user.role)
+    forgetAccess(user.id)
   } catch (err) {
     console.error("[abpay] syncOwnerCompanies failed:", err)
   }

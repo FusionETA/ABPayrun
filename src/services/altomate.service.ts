@@ -1,8 +1,39 @@
 import { config } from "../config"
 import { periodLabel } from "../lib/period"
 
-/** One organization the owner can manage in AltomateHR. */
-export type AltomateOrg = { id: string; name: string }
+/**
+ * One organization the person owns or administers in AltomateHR. The
+ * access fields come from an AltomateHR with Manage-access support
+ * (`auth.access`); an older one leaves them null.
+ */
+export type AltomateOrg = {
+  id: string
+  name: string
+  /** "Owner" or "Admin" in this company. */
+  role: string | null
+  /** False when Manage access limits them to some employees here. */
+  allEmployees: boolean | null
+  /** May create, generate and post this company's payroll runs. */
+  canRunPayroll: boolean | null
+}
+
+type RawOrg = {
+  id: string
+  name: string
+  role?: string | null
+  allEmployees?: boolean | null
+  canRunPayroll?: boolean | null
+}
+
+function toOrg(o: RawOrg): AltomateOrg {
+  return {
+    id: o.id,
+    name: o.name,
+    role: o.role ?? null,
+    allEmployees: o.allEmployees ?? null,
+    canRunPayroll: o.canRunPayroll ?? null,
+  }
+}
 
 /** Identity returned by AltomateHR's POST /auth/verify. */
 export type AltomateUser = {
@@ -74,7 +105,7 @@ export async function verifyCredentials(
       role: string
       organizationId?: string | null
       organizationName?: string | null
-      organizations?: Array<{ id: string; name: string }>
+      organizations?: RawOrg[]
     }
     return {
       id: d.id,
@@ -84,7 +115,7 @@ export async function verifyCredentials(
       role: d.role.toUpperCase(),
       organizationId: d.organizationId ?? null,
       organizationName: d.organizationName ?? null,
-      organizations: (d.organizations ?? []).map((o) => ({ id: o.id, name: o.name })),
+      organizations: (d.organizations ?? []).map(toOrg),
     }
   }
   if (res.status === 401 || res.status === 403) {
@@ -120,8 +151,8 @@ export async function fetchOwnerOrganizations(userId: string): Promise<AltomateO
     { method: "POST", body: JSON.stringify({ userId }) },
   )
   if (res.status === 200) {
-    const json = (await res.json()) as { organizations?: Array<{ id: string; name: string }> }
-    return (json.organizations ?? []).map((o) => ({ id: o.id, name: o.name }))
+    const json = (await res.json()) as { organizations?: RawOrg[] }
+    return (json.organizations ?? []).map(toOrg)
   }
   const text = await res.text().catch(() => "")
   throw new Error(
@@ -153,6 +184,75 @@ export async function whoami(token: string): Promise<WhoamiResult | null> {
 
   const text = await res.text().catch(() => "")
   throw new Error(`AltomateHR /whoami unexpected ${res.status}: ${text.slice(0, 200)}`)
+}
+
+/**
+ * Whether this AltomateHR can say what each admin may reach (Manage access):
+ * GET /whoami with the master key lists the `auth.access` feature. An
+ * AltomateHR from before that answers the master key with 401 → false.
+ */
+export async function hasAccessFeature(): Promise<boolean> {
+  const res = await altomateFetch(config.altomate.authToken, "/whoami")
+  if (res.status === 401 || res.status === 403) return false
+  if (!res.ok) throw new Error(`AltomateHR /whoami unexpected ${res.status}`)
+  const d = (await res.json().catch(() => null)) as { features?: string[] } | null
+  return (d?.features ?? []).includes("auth.access")
+}
+
+/** What one person may reach in one company (POST /auth/access). */
+export type AltomateAccess = {
+  role: string
+  /** True = no employee restriction; `employeeUserIds` is then null. */
+  allEmployees: boolean
+  /** The people they may see, as AltomateHR user ids (GET /employees `id`). */
+  employeeUserIds: string[] | null
+  canRunPayroll: boolean
+  canChangeSettings: boolean
+  /** Module → "Manage" | "View"; a module that's off is absent. */
+  modules: Record<string, string>
+}
+
+/**
+ * Ask AltomateHR what `userId` may reach in `organizationId`, with the
+ * master key. Always live — AltomateHR never caches it. Null when the
+ * person isn't an Owner/Admin of that company (404).
+ */
+export async function fetchAccess(
+  userId: string,
+  organizationId: string,
+): Promise<AltomateAccess | null> {
+  let res: Response
+  try {
+    res = await altomateFetch(config.altomate.authToken, "/auth/access", {
+      method: "POST",
+      body: JSON.stringify({ userId, organizationId }),
+    })
+  } catch {
+    throw new AltomateApiError("down", "Couldn't reach AltomateHR to check your access.")
+  }
+  if (res.status === 404) return null
+  if (res.status === 429) {
+    throw new AltomateApiError("down", "AltomateHR is busy — try again in a minute.")
+  }
+  if (!res.ok) {
+    throw new AltomateApiError("down", `Couldn't check your access in AltomateHR (${res.status}).`)
+  }
+  const d = (await res.json()) as {
+    role: string
+    allEmployees: boolean
+    canRunPayroll: boolean
+    canChangeSettings?: boolean
+    modules?: Record<string, string>
+    employees?: Array<{ userId: string }> | null
+  }
+  return {
+    role: d.role,
+    allEmployees: d.allEmployees,
+    employeeUserIds: d.allEmployees ? null : (d.employees ?? []).map((e) => e.userId),
+    canRunPayroll: d.canRunPayroll,
+    canChangeSettings: d.canChangeSettings ?? false,
+    modules: d.modules ?? {},
+  }
 }
 
 /**
