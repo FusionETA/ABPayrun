@@ -18,6 +18,8 @@ import { resetRunsForImport } from "../repositories/run.repository"
 import { runFileTag } from "../domain/posting"
 import {
   companiesWithoutPayroll,
+  outsideAccessMessage,
+  peopleOutsideAccess,
   loadAccess,
   noPayrollMessage,
   type Access,
@@ -34,27 +36,27 @@ export const runsRoutes = new Hono<AppEnv>()
 
 /**
  * The runs overview as this person may see it: only their companies, the
- * ones they can't run payroll for listed in `noPayroll` (their runs and pay
- * stay hidden), and whether they can run payroll anywhere.
+ * ones they can't run payroll for in `noPayroll`, the ones where they see
+ * only some employees in `limited` (a run's totals hold everyone's pay, so
+ * neither shows runs or pay), and whether they can run payroll anywhere.
  */
 function overviewFor(overview: RunsOverview, access: Access) {
   const companies = overview.companies.filter((v) => access.canSee(v.company.altomate_org_id))
-  const noPayroll = new Set(
-    companies
-      .filter((v) => !access.canRunPayroll(v.company.altomate_org_id))
-      .map((v) => v.company.altomate_org_id),
-  )
+  const idsWhere = (keep: (orgId: string) => boolean) =>
+    new Set(companies.map((v) => v.company.altomate_org_id).filter(keep))
+  const noPayroll = idsWhere((id) => !access.canRunPayroll(id))
+  const limited = idsWhere((id) => access.canRunPayroll(id) && access.limitedIn(id))
   const canUpload = companies.some(
     (v) => v.connected && !v.error && !noPayroll.has(v.company.altomate_org_id),
   )
-  return { overview: { ...overview, companies }, noPayroll, canUpload }
+  return { overview: { ...overview, companies }, noPayroll, limited, canUpload }
 }
 
 /** Dashboard: per-company payroll runs from AltomateHR + the next month. */
 runsRoutes.get("/", requireAuth, async (c) => {
   const user = c.get("user")
   const access = c.get("access")
-  const { overview, noPayroll, canUpload } = overviewFor(await getRunsOverview(), access)
+  const { overview, noPayroll, limited, canUpload } = overviewFor(await getRunsOverview(), access)
   const ok = c.req.query("ok")
   const err = c.req.query("err") ?? access.error ?? undefined
   const flash = ok
@@ -68,7 +70,7 @@ runsRoutes.get("/", requireAuth, async (c) => {
       user={{ name: user.name, email: user.email }}
       flash={flash}
     >
-      <RunsPage overview={overview} noPayroll={noPayroll} canUpload={canUpload} />
+      <RunsPage overview={overview} noPayroll={noPayroll} limited={limited} canUpload={canUpload} />
     </Layout>,
   )
 })
@@ -231,6 +233,13 @@ runsRoutes.post("/convert", requireAuth, async (c) => {
   }
 
   const report = await validateTimesheet(parsed, companies)
+
+  // Someone limited to some employees may post only for them: anyone else on
+  // the sheet refuses the whole file, before it's saved or its pay shown.
+  const outside = await peopleOutsideAccess(access, parsed, companies, { report })
+  if (outside.length > 0) {
+    return c.redirect(`/convert?err=${encodeURIComponent(outsideAccessMessage(outside))}`)
+  }
 
   // Keep the upload as a timesheet of the month, so the column-mapping,
   // review and post steps can come back to it. A month can have several

@@ -227,11 +227,21 @@ function NextCell({ view }: { view: CompanyRunsView }) {
  * One row per company with its latest run. Earlier runs are hidden rows in
  * the same columns, opened with the chevron.
  */
-function CompanyRows({ view, payroll }: { view: CompanyRunsView; payroll: boolean }) {
+function CompanyRows({
+  view,
+  payroll,
+  limited,
+}: {
+  view: CompanyRunsView
+  payroll: boolean
+  limited: boolean
+}) {
   const { company, connected, runs, error } = view
-  // Without payroll access in AltomateHR, none of the company's pay shows.
-  const latest = payroll && connected && !error ? runs[0] : undefined
-  const earlier = payroll && connected && !error ? runs.slice(1) : []
+  // Without payroll access in AltomateHR, none of the company's pay shows —
+  // nor for someone who sees only some employees: run totals hold everyone's.
+  const shown = payroll && !limited
+  const latest = shown && connected && !error ? runs[0] : undefined
+  const earlier = shown && connected && !error ? runs.slice(1) : []
   const group = `runs-${company.altomate_org_id}`
 
   return (
@@ -263,7 +273,15 @@ function CompanyRows({ view, payroll }: { view: CompanyRunsView; payroll: boolea
           <RunCells run={latest} />
         ) : (
           <EmptyRunCells
-            label={!payroll ? "No payroll access" : connected && !error ? "No runs yet" : "—"}
+            label={
+              !payroll
+                ? "No payroll access"
+                : limited
+                  ? "Hidden: your access covers some employees"
+                  : connected && !error
+                    ? "No runs yet"
+                    : "—"
+            }
           />
         )}
         <td class={CELL}>
@@ -313,15 +331,20 @@ function NoPayrollBanner() {
 
 /**
  * `noPayroll`: companies the viewer can see but may not run payroll for —
- * their runs aren't shown. `canUpload`: they may run payroll somewhere.
+ * their runs aren't shown. `limited`: companies where they see only some
+ * employees — they may post for those, but the company's run totals hold
+ * everyone's pay, so its runs aren't shown either. `canUpload`: they may run
+ * payroll somewhere.
  */
 export function RunsPage({
   overview,
   noPayroll = new Set<string>(),
+  limited = new Set<string>(),
   canUpload = true,
 }: {
   overview: RunsOverview
   noPayroll?: Set<string>
+  limited?: Set<string>
   canUpload?: boolean
 }) {
   return (
@@ -366,6 +389,7 @@ export function RunsPage({
                   <CompanyRows
                     view={view}
                     payroll={!noPayroll.has(view.company.altomate_org_id)}
+                    limited={limited.has(view.company.altomate_org_id)}
                   />
                 ))}
               </tbody>

@@ -9,6 +9,8 @@ import { timesheetName } from "../repositories/import.repository"
 import { listRunsForImport } from "../repositories/run.repository"
 import {
   companiesWithoutPayroll,
+  outsideAccessMessage,
+  peopleOutsideAccess,
   loadAccess,
   noPayrollMessage,
 } from "../services/access.service"
@@ -50,8 +52,9 @@ function flashFrom(ok: string | undefined, err: string | undefined) {
 
 /**
  * Why this person may not work on this timesheet — it includes a company
- * they can't run payroll for in AltomateHR — or null. Every step checks:
- * each page shows pay, and posting asks AltomateHR afresh.
+ * they can't run payroll for in AltomateHR, or people their access doesn't
+ * cover — or null. Every step checks: each page shows pay, and posting asks
+ * AltomateHR afresh.
  */
 async function payrollBlock(
   c: Context<AppEnv>,
@@ -60,12 +63,15 @@ async function payrollBlock(
 ): Promise<string | null> {
   const access = fresh ? await loadAccess(c.get("user"), { fresh: true }) : c.get("access")
   if (access.error) return access.error
+  const companies = await listCompanies()
   const blocked = companiesWithoutPayroll(
     access,
-    await listCompanies(),
+    companies,
     imp.parsed.companies.map((g) => g.company),
   )
-  return blocked.length > 0 ? noPayrollMessage(blocked) : null
+  if (blocked.length > 0) return noPayrollMessage(blocked)
+  const outside = await peopleOutsideAccess(access, imp.parsed, companies, { fresh })
+  return outside.length > 0 ? outsideAccessMessage(outside) : null
 }
 
 function round2(n: number): number {
