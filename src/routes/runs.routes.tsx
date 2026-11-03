@@ -18,6 +18,8 @@ import { resetRunsForImport } from "../repositories/run.repository"
 import { runFileTag } from "../domain/posting"
 import {
   companiesWithoutPayroll,
+  outsideAccessMessage,
+  peopleOutsideAccess,
   loadAccess,
   noPayrollMessage,
   type Access,
@@ -25,6 +27,7 @@ import {
 import { getRunsOverview, type RunsOverview } from "../services/runs.service"
 import { parseTimesheet } from "../services/timesheet.service"
 import { validateTimesheet } from "../services/validate.service"
+import { loadImport } from "../services/posting.service"
 import { ConvertPage } from "../views/convert"
 import { ConvertPreview } from "../views/convert-preview"
 import { Layout } from "../views/layout"
@@ -34,27 +37,27 @@ export const runsRoutes = new Hono<AppEnv>()
 
 /**
  * The runs overview as this person may see it: only their companies, the
- * ones they can't run payroll for listed in `noPayroll` (their runs and pay
- * stay hidden), and whether they can run payroll anywhere.
+ * ones they can't run payroll for in `noPayroll`, the ones where they see
+ * only some employees in `limited` (a run's totals hold everyone's pay, so
+ * neither shows runs or pay), and whether they can run payroll anywhere.
  */
 function overviewFor(overview: RunsOverview, access: Access) {
   const companies = overview.companies.filter((v) => access.canSee(v.company.altomate_org_id))
-  const noPayroll = new Set(
-    companies
-      .filter((v) => !access.canRunPayroll(v.company.altomate_org_id))
-      .map((v) => v.company.altomate_org_id),
-  )
+  const idsWhere = (keep: (orgId: string) => boolean) =>
+    new Set(companies.map((v) => v.company.altomate_org_id).filter(keep))
+  const noPayroll = idsWhere((id) => !access.canRunPayroll(id))
+  const limited = idsWhere((id) => access.canRunPayroll(id) && access.limitedIn(id))
   const canUpload = companies.some(
     (v) => v.connected && !v.error && !noPayroll.has(v.company.altomate_org_id),
   )
-  return { overview: { ...overview, companies }, noPayroll, canUpload }
+  return { overview: { ...overview, companies }, noPayroll, limited, canUpload }
 }
 
 /** Dashboard: per-company payroll runs from AltomateHR + the next month. */
 runsRoutes.get("/", requireAuth, async (c) => {
   const user = c.get("user")
   const access = c.get("access")
-  const { overview, noPayroll, canUpload } = overviewFor(await getRunsOverview(), access)
+  const { overview, noPayroll, limited, canUpload } = overviewFor(await getRunsOverview(), access)
   const ok = c.req.query("ok")
   const err = c.req.query("err") ?? access.error ?? undefined
   const flash = ok
@@ -68,7 +71,7 @@ runsRoutes.get("/", requireAuth, async (c) => {
       user={{ name: user.name, email: user.email }}
       flash={flash}
     >
-      <RunsPage overview={overview} noPayroll={noPayroll} canUpload={canUpload} />
+      <RunsPage overview={overview} noPayroll={noPayroll} limited={limited} canUpload={canUpload} />
     </Layout>,
   )
 })
@@ -232,6 +235,13 @@ runsRoutes.post("/convert", requireAuth, async (c) => {
 
   const report = await validateTimesheet(parsed, companies)
 
+  // Someone limited to some employees may post only for them: anyone else on
+  // the sheet refuses the whole file, before it's saved or its pay shown.
+  const outside = await peopleOutsideAccess(access, parsed, companies, { report })
+  if (outside.length > 0) {
+    return c.redirect(`/convert?err=${encodeURIComponent(outsideAccessMessage(outside))}`)
+  }
+
   // Keep the upload as a timesheet of the month, so the column-mapping,
   // review and post steps can come back to it. A month can have several
   // timesheets, each posted as its own run per company and named after it;
@@ -254,6 +264,19 @@ runsRoutes.post("/convert", requireAuth, async (c) => {
     return c.redirect("/convert?uploadError=target")
   }
   if (replacing?.status === "POSTING") return c.redirect("/convert?uploadError=posting")
+  // Replacing a timesheet deletes the draft runs it made — so its people,
+  // not just the new file's, must all be ones this person's access covers.
+  if (replacing) {
+    const old = await loadImport(replacing.id)
+    const theirs = old ? await peopleOutsideAccess(access, old.parsed, companies, { fresh: true }) : []
+    if (theirs.length > 0) {
+      return c.redirect(
+        `/convert?err=${encodeURIComponent(
+          `You can't replace "${timesheetName(replacing)}": it includes people your access in AltomateHR doesn't cover — ${theirs.join("; ")}. Upload yours as a new timesheet instead.`,
+        )}`,
+      )
+    }
+  }
   // Two timesheets of a month can't share a name — nor names AltomateHR
   // would file the same way ("Kitchen 1" / "Kitchen-1").
   const clash = monthImports.find(
