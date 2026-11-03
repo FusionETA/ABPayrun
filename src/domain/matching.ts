@@ -37,10 +37,63 @@ export type MatchableEmployee = {
   nickname?: string | null
 }
 
+// "(AL531) Boy Owen 2": a staff code written at the front of a nickname,
+// the way the timesheet writes "AL531) Boy Owen 2". The bracket before it is
+// optional; the one after it is what marks it as a code.
+const NICKNAME_CODE_RE = /^\s*\(?\s*([A-Za-z]{1,6}\d+(?:-[A-Za-z0-9]{1,4})?)\s*\)\s*(.*)$/
+
+/**
+ * Split a nickname into the staff code at its front and the name after it.
+ * "(AL531) Boy Owen 2" → { code: "AL531", name: "Boy Owen 2" };
+ * "Ivy" → { code: null, name: "Ivy" }.
+ */
+export function nicknameParts(nickname: string | null | undefined): {
+  code: string | null
+  name: string
+} {
+  const m = NICKNAME_CODE_RE.exec(nickname ?? "")
+  if (m) return { code: m[1]!.toUpperCase(), name: m[2]!.trim() }
+  return { code: null, name: (nickname ?? "").trim() }
+}
+
+/**
+ * The staff codes a person answers to: their employee number, and a code at
+ * the front of their nickname (AltomateHR files payroll by a number like
+ * 00015, while the timesheet knows them as AL531).
+ */
+function staffCodes(e: MatchableEmployee): string[] {
+  const codes: string[] = []
+  if (e.employeeId) codes.push(e.employeeId.toUpperCase())
+  const fromNickname = nicknameParts(e.nickname).code
+  if (fromNickname && !codes.includes(fromNickname)) codes.push(fromNickname)
+  return codes
+}
+
+/** Their nickname without a staff code in front, normalized. */
+function nicknameName(e: MatchableEmployee): string {
+  return normalizeName(nicknameParts(e.nickname).name)
+}
+
+/** One person holding the code — by employee number first, then nickname. */
+function findByCode(
+  code: string,
+  employees: MatchableEmployee[],
+): MatchableEmployee | undefined {
+  const byNumber = employees.find(
+    (e) => e.employeeId && e.employeeId.toUpperCase() === code,
+  )
+  if (byNumber) return byNumber
+  // A code written in two people's nicknames is a typo in AltomateHR:
+  // neither is guessed.
+  const byNickname = employees.filter((e) => nicknameParts(e.nickname).code === code)
+  return byNickname.length === 1 ? byNickname[0] : undefined
+}
+
 /**
  * Match one timesheet line to an AltomateHR employee:
- *   1. by staff code == `employeeId` (exact, case-insensitive), then
- *   2. by normalized name (exact).
+ *   1. by staff code == `employeeId`, or the code at the front of their
+ *      nickname (exact, case-insensitive), then
+ *   2. by normalized name or nickname (exact).
  * No fuzzy/partial matching — an ambiguous match should surface as
  * "unmatched" so the all-or-nothing gate blocks it rather than guessing.
  */
@@ -57,9 +110,7 @@ export function matchEmployee(
 
   if (line.code) {
     const code = line.code.toUpperCase()
-    const byCode = employees.find(
-      (e) => e.employeeId && e.employeeId.toUpperCase() === code,
-    )
+    const byCode = findByCode(code, employees)
     if (byCode) {
       // The code is someone's, but the name on the row is exactly someone
       // ELSE's — e.g. a duplicate written with the other company's number
@@ -73,22 +124,20 @@ export function matchEmployee(
       if (
         target &&
         normalizeName(byCode.name) !== target &&
-        normalizeName(byCode.nickname ?? "") !== target
+        nicknameName(byCode) !== target
       ) {
         const others = employees.filter(
           (e) =>
             e.id !== byCode.id &&
-            normalizeName(e.name) === target &&
-            !!e.employeeId &&
-            e.employeeId.toUpperCase().startsWith(`${code}-`),
+            (normalizeName(e.name) === target || nicknameName(e) === target) &&
+            staffCodes(e).some((c) => c.startsWith(`${code}-`)),
         )
         if (others.length > 0) {
           const other = others[0]!
+          const otherCode = staffCodes(other).find((c) => c.startsWith(`${code}-`))
           return {
             ...miss,
-            reason: `${code} is ${byCode.name} in AltomateHR, but ${other.name} is ${
-              other.employeeId || "without a staff number"
-            } — fix the staff code on the timesheet.`,
+            reason: `${code} is ${byCode.name} in AltomateHR, but ${other.name} is ${otherCode} — fix the staff code on the timesheet.`,
           }
         }
       }
@@ -109,8 +158,9 @@ export function matchEmployee(
     // that is someone else's full name) → unmatched, so posting is blocked
     // rather than paying the wrong person.
     const byName = (e: MatchableEmployee) => normalizeName(e.name) === target
-    const byNickname = (e: MatchableEmployee) =>
-      !!e.nickname && normalizeName(e.nickname) === target
+    // A nickname's staff code isn't part of what they're called:
+    // "(AL531) Boy Owen 2" answers to "Boy Owen 2".
+    const byNickname = (e: MatchableEmployee) => nicknameName(e) === target
     const matches = employees.filter((e) => byName(e) || byNickname(e))
     if (matches.length === 1) {
       const m = matches[0]!
