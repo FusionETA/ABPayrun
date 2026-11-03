@@ -11,6 +11,7 @@ import {
   companiesWithoutPayroll,
   outsideAccessMessage,
   peopleOutsideAccess,
+  planAsSeenBy,
   loadAccess,
   noPayrollMessage,
 } from "../services/access.service"
@@ -162,6 +163,8 @@ importsRoutes.get("/imports/:id/review", requireAuth, async (c) => {
   }
   if (!plan) return c.redirect("/convert")
   if (plan.imp.record.status === "POSTED") return c.redirect(`/imports/${id}`)
+  // Only the names this person may see; posting uses the whole plan.
+  plan = await planAsSeenBy(plan, c.get("access"))
 
   return c.html(
     <Layout
