@@ -3,6 +3,8 @@ import { deleteCookie, setCookie } from "hono/cookie"
 
 import { config } from "../config"
 import { issueSession, sessionTtlSeconds } from "../lib/jwt"
+import { clientIp } from "../lib/client-ip"
+import { SignInPausedError } from "../services/altomate.service"
 import { login, type AltomateUser } from "../services/auth.service"
 import { forgetAccess } from "../services/access.service"
 import { syncOwnerCompanies } from "../services/company.service"
@@ -27,6 +29,12 @@ function loginErrorMessage(code: string | undefined): string | undefined {
       return "ABPay can't authenticate to AltomateHR — its access credential was rejected (invalid or revoked). Refresh ABPay's credential, then try again."
     case "unreachable":
       return "Couldn't reach AltomateHR. Please try again."
+    case "locked":
+      return "Too many wrong passwords for this account, so it's locked for 15 minutes. Try again later, or reset your password in AltomateHR."
+    case "paused":
+      return "Too many wrong passwords from your network, so sign-in is paused for 15 minutes (an hour if it keeps happening). Try again later."
+    case "busy":
+      return "Too many sign-ins at once. Wait a minute and try again."
     default:
       return undefined
   }
@@ -52,8 +60,13 @@ authRoutes.post("/login", async (c) => {
 
   let user: AltomateUser | null
   try {
-    user = await login(email, password)
+    user = await login(email, password, clientIp(c))
   } catch (err) {
+    if (err instanceof SignInPausedError) {
+      // Only a code in the URL (no PII).
+      const code = err.kind === "account" ? "locked" : err.kind === "network" ? "paused" : "busy"
+      return c.redirect(`/login?error=${code}`)
+    }
     console.error("[abpay] login failed (AltomateHR):", err)
     const code =
       err instanceof Error && /access credential/i.test(err.message)
