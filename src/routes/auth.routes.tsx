@@ -29,8 +29,12 @@ function loginErrorMessage(code: string | undefined): string | undefined {
       return "ABPay can't authenticate to AltomateHR — its access credential was rejected (invalid or revoked). Refresh ABPay's credential, then try again."
     case "unreachable":
       return "Couldn't reach AltomateHR. Please try again."
+    case "locked":
+      return "Too many wrong passwords for this account, so it's locked for 15 minutes. Try again later, or reset your password in AltomateHR."
     case "paused":
-      return "Too many wrong passwords, so sign-in is paused for 15 minutes (an hour if it keeps happening). Try again later, or reset your password in AltomateHR."
+      return "Too many wrong passwords from your network, so sign-in is paused for 15 minutes (an hour if it keeps happening). Try again later."
+    case "busy":
+      return "Too many sign-ins at once. Wait a minute and try again."
     default:
       return undefined
   }
@@ -59,8 +63,9 @@ authRoutes.post("/login", async (c) => {
     user = await login(email, password, clientIp(c))
   } catch (err) {
     if (err instanceof SignInPausedError) {
-      // Only a code in the URL (no PII); the wording is the lockout's own.
-      return c.redirect("/login?error=paused")
+      // Only a code in the URL (no PII).
+      const code = err.kind === "account" ? "locked" : err.kind === "network" ? "paused" : "busy"
+      return c.redirect(`/login?error=${code}`)
     }
     console.error("[abpay] login failed (AltomateHR):", err)
     const code =

@@ -88,8 +88,20 @@ export async function altomateFetch(
  *   - 401/403 → null
  *   - else → throw (so the caller can say "AltomateHR is down")
  */
-/** AltomateHR refused the sign-in for now; the message says for how long. */
-export class SignInPausedError extends Error {}
+/**
+ * AltomateHR refused the sign-in for now. `kind` says why:
+ *  - "account": 5 wrong passwords in a row locked the account (15 minutes);
+ *  - "network": 10 wrong from this visitor's IP paused it (15 min, or an hour);
+ *  - "busy": too many sign-ins at once — clears within a minute.
+ */
+export class SignInPausedError extends Error {
+  constructor(
+    message: string,
+    readonly kind: "account" | "network" | "busy",
+  ) {
+    super(message)
+  }
+}
 
 export async function verifyCredentials(
   email: string,
@@ -135,11 +147,15 @@ export async function verifyCredentials(
     return null
   }
   if (res.status === 429) {
-    // A locked account or blocked IP says how long; a busy minute doesn't.
+    // A lock or block comes with AltomateHR's own message; its plain rate
+    // limit (a busy minute) and "still being checked" clear in moments.
     const message = await errorMessage(res)
-    throw new SignInPausedError(
-      /try again/i.test(message) ? message : "Too many sign-in attempts — wait a minute and try again.",
-    )
+    const kind = /wrong passwords for this account/i.test(message)
+      ? "account"
+      : /wrong passwords from your network/i.test(message)
+        ? "network"
+        : "busy"
+    throw new SignInPausedError(message || "Too many sign-in attempts.", kind)
   }
 
   const text = await res.text().catch(() => "")
