@@ -340,11 +340,22 @@ export function planCompany(input: {
       })
     }
 
-    // No Basic and nothing else to pay: AltomateHR can't approve a payslip
-    // of zero, so say it here rather than at approval.
-    if (basic === 0 && !lines.some((l) => l.kind !== "DEDUCTION" && l.amount > 0)) {
-      problems.push(`${who} has nothing to pay on the timesheet — no Basic and no other pay. Remove them from the sheet.`)
-      continue
+    // No Basic, and the other columns pay nothing once deductions are taken:
+    // AltomateHR refuses to approve a negative payslip, so say it here, at
+    // review, before their salary is set to 0.
+    if (basic === 0) {
+      const pay = round2(lines.filter((l) => l.kind !== "DEDUCTION").reduce((s, l) => s + l.amount, 0))
+      const deducted = round2(lines.filter((l) => l.kind === "DEDUCTION").reduce((s, l) => s + l.amount, 0))
+      if (pay === 0) {
+        problems.push(`${who} has nothing to pay on the timesheet — no Basic and no other pay. Remove them from the sheet.`)
+        continue
+      }
+      if (deducted >= pay) {
+        problems.push(
+          `${who} has no Basic, and their deductions (${money(deducted)}) are at least their other pay (${money(pay)}) — their payslip would be negative. Check the sheet.`,
+        )
+        continue
+      }
     }
     if (basic === 0 && newSalary != null) {
       warnings.push(
