@@ -71,6 +71,40 @@ export async function loadImport(id: number): Promise<LoadedImport | null> {
   }
 }
 
+/**
+ * The companies where replacing this timesheet deletes nothing in AltomateHR:
+ * ABPay posted a run for them, and that run has since been deleted there (an
+ * admin did it by hand) or approved (approved runs are left alone). Who is on
+ * the old timesheet for these companies doesn't matter to a replace.
+ *
+ * Companies never posted aren't listed, nor any whose runs can't be read
+ * right now — the replace check then still looks at their people.
+ */
+export async function companiesWithNothingToReplace(
+  importId: number,
+  companies: CompanyRecord[],
+): Promise<Set<string>> {
+  const posted = (await listRunsForImport(importId)).filter((p) => p.altomate_run_id)
+  const byCode = new Map(
+    companies.filter((c) => c.code).map((c) => [c.code!.toUpperCase(), c] as const),
+  )
+  const done = new Set<string>()
+  await Promise.all(
+    posted.map(async (p) => {
+      const company = byCode.get(p.company_code.toUpperCase())
+      const token = company ? tokenOf(company) : null
+      if (!token) return
+      try {
+        const run = (await listPayrollRuns(token)).find((r) => r.id === p.altomate_run_id)
+        if (!run || run.status === "SUBMITTED") done.add(p.company_code.toUpperCase())
+      } catch {
+        // Can't tell: leave it to the check.
+      }
+    }),
+  )
+  return done
+}
+
 function tokenOf(company: CompanyRecord): string | null {
   if (!company.wp_token_enc) return null
   try {
