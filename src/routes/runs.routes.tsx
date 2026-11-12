@@ -27,7 +27,7 @@ import {
 import { getRunsOverview, type RunsOverview } from "../services/runs.service"
 import { parseTimesheet } from "../services/timesheet.service"
 import { validateTimesheet } from "../services/validate.service"
-import { loadImport } from "../services/posting.service"
+import { companiesWithNothingToReplace, loadImport } from "../services/posting.service"
 import { ConvertPage } from "../views/convert"
 import { ConvertPreview } from "../views/convert-preview"
 import { Layout } from "../views/layout"
@@ -266,13 +266,23 @@ runsRoutes.post("/convert", requireAuth, async (c) => {
   if (replacing?.status === "POSTING") return c.redirect("/convert?uploadError=posting")
   // Replacing a timesheet deletes the draft runs it made — so its people,
   // not just the new file's, must all be ones this person's access covers.
+  // A company whose run was already deleted in AltomateHR (or approved) has
+  // nothing left to delete, so its people aren't checked.
   if (replacing) {
     const old = await loadImport(replacing.id)
-    const theirs = old ? await peopleOutsideAccess(access, old.parsed, companies, { fresh: true }) : []
+    let theirs: string[] = []
+    if (old && access.enforced) {
+      const skip = await companiesWithNothingToReplace(replacing.id, companies)
+      const stillThere = {
+        ...old.parsed,
+        companies: old.parsed.companies.filter((g) => !skip.has(g.company.toUpperCase())),
+      }
+      theirs = await peopleOutsideAccess(access, stillThere, companies, { fresh: true })
+    }
     if (theirs.length > 0) {
       return c.redirect(
         `/convert?err=${encodeURIComponent(
-          `You can't replace "${timesheetName(replacing)}": it includes people your access in AltomateHR doesn't cover — ${theirs.join("; ")}. Upload yours as a new timesheet instead.`,
+          `You can't replace "${timesheetName(replacing)}": its draft runs in AltomateHR include people your access doesn't cover — ${theirs.join("; ")}. Ask an admin whose access covers them to replace it, or delete that company's draft run in AltomateHR first.`,
         )}`,
       )
     }
