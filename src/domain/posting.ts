@@ -260,12 +260,12 @@ export function planCompany(input: {
     }
 
     const basic = round2(line.basic)
-    if (basic <= 0) {
-      problems.push(
-        `${who} has no Basic on the timesheet — AltomateHR would pay their profile salary. Add it, or remove them from the sheet.`,
-      )
+    if (basic < 0) {
+      problems.push(`${who}: Basic is ${money(basic)} on the timesheet. It can't be negative — check the sheet.`)
       continue
     }
+    // No Basic means paid on commission (or other columns) only: their basic
+    // in AltomateHR is set to 0, so it doesn't pay their profile salary on top.
     const current = profile.monthlySalary
     const newSalary = current != null && round2(current) === basic ? null : basic
 
@@ -338,6 +338,18 @@ export function planCompany(input: {
         breakdown: null,
         hours: col.key === "otAmount" && round2(line.otHours) > 0 ? round2(line.otHours) : null,
       })
+    }
+
+    // No Basic and nothing else to pay: AltomateHR can't approve a payslip
+    // of zero, so say it here rather than at approval.
+    if (basic === 0 && !lines.some((l) => l.kind !== "DEDUCTION" && l.amount > 0)) {
+      problems.push(`${who} has nothing to pay on the timesheet — no Basic and no other pay. Remove them from the sheet.`)
+      continue
+    }
+    if (basic === 0 && newSalary != null) {
+      warnings.push(
+        `${who} has no Basic on the timesheet, so their basic salary in AltomateHR is set to ${money(0)} (from ${money(current ?? 0)}) and they're paid only the other columns. Later months stay at ${money(0)} until a timesheet gives them a Basic.`,
+      )
     }
 
     employees.push({
