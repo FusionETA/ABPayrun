@@ -26,6 +26,13 @@ const envSchema = z.object({
   // Seconds a cached AltomateHR read (employees/projects) stays fresh
   // before the Companies page re-pulls. 0 = always pull live.
   ALTOMATE_CACHE_TTL: z.coerce.number().int().nonnegative().default(600),
+  // Whether ABPay sits behind ONE reverse proxy (nginx, a load balancer)
+  // that appends the visitor's IP to X-Forwarded-For. "1" (default): the last
+  // hop is the visitor. "0": nothing in front — the connection is the visitor
+  // and X-Forwarded-For is ignored (a visitor could write anything in it).
+  // The IP goes to AltomateHR with each sign-in, which blocks an IP that
+  // keeps getting passwords wrong.
+  TRUST_PROXY: z.enum(["0", "1"]).default("1"),
   ALTOMATE_TOKEN_ABSA: z.string().optional(),
   ALTOMATE_TOKEN_ABM: z.string().optional(),
   ALTOMATE_TOKEN_ABSB: z.string().optional(),
@@ -75,6 +82,7 @@ export const config = {
   jwtSecret: env.JWT_SECRET,
   sessionCookie: env.SESSION_COOKIE,
   tokenEncKey: env.TOKEN_ENC_KEY,
+  trustProxy: env.TRUST_PROXY === "1",
   altomate: {
     baseUrl: env.ALTOMATE_BASE_URL.replace(/\/+$/, ""),
     authToken: env.ALTOMATE_AUTH_TOKEN,

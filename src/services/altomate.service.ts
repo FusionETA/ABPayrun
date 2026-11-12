@@ -88,13 +88,19 @@ export async function altomateFetch(
  *   - 401/403 → null
  *   - else → throw (so the caller can say "AltomateHR is down")
  */
+/** AltomateHR refused the sign-in for now; the message says for how long. */
+export class SignInPausedError extends Error {}
+
 export async function verifyCredentials(
   email: string,
   password: string,
+  clientIp: string | null = null,
 ): Promise<AltomateUser | null> {
+  // The visitor's IP goes along, so AltomateHR blocks a guesser here as it
+  // would at its own login — that IP, not ABPay's server.
   const res = await altomateFetch(config.altomate.authToken, "/auth/verify", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify(clientIp ? { email, password, clientIp } : { email, password }),
   })
 
   if (res.status === 200) {
@@ -129,7 +135,11 @@ export async function verifyCredentials(
     return null
   }
   if (res.status === 429) {
-    throw new Error("Too many sign-in attempts — wait a minute and try again.")
+    // A locked account or blocked IP says how long; a busy minute doesn't.
+    const message = await errorMessage(res)
+    throw new SignInPausedError(
+      /try again/i.test(message) ? message : "Too many sign-in attempts — wait a minute and try again.",
+    )
   }
 
   const text = await res.text().catch(() => "")

@@ -10,6 +10,7 @@ export type { AltomateUser } from "./altomate.service"
 export async function login(
   email: string,
   password: string,
+  clientIp: string | null = null,
 ): Promise<AltomateUser | null> {
-  return verifyCredentials(email, password)
+  return verifyCredentials(email, password, clientIp)
 }
