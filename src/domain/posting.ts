@@ -260,12 +260,12 @@ export function planCompany(input: {
     }
 
     const basic = round2(line.basic)
-    if (basic <= 0) {
-      problems.push(
-        `${who} has no Basic on the timesheet — AltomateHR would pay their profile salary. Add it, or remove them from the sheet.`,
-      )
+    if (basic < 0) {
+      problems.push(`${who}: Basic is ${money(basic)} on the timesheet. It can't be negative — check the sheet.`)
       continue
     }
+    // No Basic means paid on commission (or other columns) only: their basic
+    // in AltomateHR is set to 0, so it doesn't pay their profile salary on top.
     const current = profile.monthlySalary
     const newSalary = current != null && round2(current) === basic ? null : basic
 
@@ -338,6 +338,29 @@ export function planCompany(input: {
         breakdown: null,
         hours: col.key === "otAmount" && round2(line.otHours) > 0 ? round2(line.otHours) : null,
       })
+    }
+
+    // No Basic, and the other columns pay nothing once deductions are taken:
+    // AltomateHR refuses to approve a negative payslip, so say it here, at
+    // review, before their salary is set to 0.
+    if (basic === 0) {
+      const pay = round2(lines.filter((l) => l.kind !== "DEDUCTION").reduce((s, l) => s + l.amount, 0))
+      const deducted = round2(lines.filter((l) => l.kind === "DEDUCTION").reduce((s, l) => s + l.amount, 0))
+      if (pay === 0) {
+        problems.push(`${who} has nothing to pay on the timesheet — no Basic and no other pay. Remove them from the sheet.`)
+        continue
+      }
+      if (deducted >= pay) {
+        problems.push(
+          `${who} has no Basic, and their deductions (${money(deducted)}) are at least their other pay (${money(pay)}) — their payslip would be negative. Check the sheet.`,
+        )
+        continue
+      }
+    }
+    if (basic === 0 && newSalary != null) {
+      warnings.push(
+        `${who} has no Basic on the timesheet, so their basic salary in AltomateHR is set to ${money(0)} (from ${money(current ?? 0)}) and they're paid only the other columns. Later months stay at ${money(0)} until a timesheet gives them a Basic.`,
+      )
     }
 
     employees.push({
