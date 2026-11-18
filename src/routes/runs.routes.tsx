@@ -7,6 +7,7 @@ import { requireAuth } from "../middleware/auth.middleware"
 import { listCompanies } from "../repositories/company.repository"
 import {
   createImport,
+  deleteUnpostedImports,
   listImports,
   listImportsForPeriod,
   nameFromFile,
@@ -32,6 +33,10 @@ import { ConvertPage } from "../views/convert"
 import { ConvertPreview } from "../views/convert-preview"
 import { Layout } from "../views/layout"
 import { RunsPage } from "../views/runs"
+
+// How long an upload that never reached AltomateHR is kept — long enough for
+// someone working through preview → mapping → post, no longer.
+const UNPOSTED_KEEP_HOURS = 24
 
 export const runsRoutes = new Hono<AppEnv>()
 
@@ -130,8 +135,15 @@ runsRoutes.get("/convert", requireAuth, async (c) => {
     }
   }
 
-  // Every timesheet started but not fully posted: offer to carry on with
-  // each — a month can have several.
+  // Uploads that never reached AltomateHR aren't kept (see SAVED in the
+  // import repository): clear out any left from a day or more ago. Best
+  // effort — the page must load either way.
+  await deleteUnpostedImports(UNPOSTED_KEEP_HOURS).catch((err) =>
+    console.error("[abpay] clearing unposted timesheets failed:", err),
+  )
+
+  // Every saved timesheet not fully posted: offer to carry on with each — a
+  // month can have several. One that never reached AltomateHR isn't listed.
   const resume = (view.canUpload ? await listImports() : [])
     .filter((imp) => imp.status !== "POSTED")
     .map((imp) => ({
@@ -250,6 +262,8 @@ runsRoutes.post("/convert", requireAuth, async (c) => {
   // ABPay made for it (their ids are kept for that) and leaves any company
   // already approved alone. Only a timesheet being posted right now has to
   // finish first.
+  // Only saved timesheets count here: an upload that never reached AltomateHR
+  // isn't offered as one to correct, and doesn't hold its name.
   const monthImports = await listImportsForPeriod(allowed.year, allowed.month)
   const target = String(body["target"] ?? "")
   const replacing =
