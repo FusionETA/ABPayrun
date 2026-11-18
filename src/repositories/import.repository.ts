@@ -14,11 +14,41 @@ export type ImportRecord = {
   created_at: string
 }
 
+/**
+ * A timesheet counts as saved once something of it reached AltomateHR: it is
+ * being posted or was (fully or partly), or any company's run was created for
+ * it — a FAILED posting can still have made one, and a corrected copy of a
+ * posted timesheet goes back to DRAFT with its runs kept for replacing.
+ *
+ * One that only got as far as the preview (or whose posting failed before
+ * any run existed) is scratch: the upload has to live somewhere between the
+ * preview, mapping and post steps, but it isn't listed, offered as something
+ * to correct, or counted for names — and it is deleted after a day.
+ */
+const SAVED = `(i.status IN ('POSTING', 'POSTED', 'PARTIAL')
+  OR EXISTS (SELECT 1 FROM posted_run r WHERE r.import_id = i.id AND r.altomate_run_id IS NOT NULL))`
+
+/** Every saved timesheet, newest month first. */
 export async function listImports(): Promise<ImportRecord[]> {
   const [rows] = await pool.query<RowDataPacket[]>(
-    "SELECT * FROM import ORDER BY period_year DESC, period_month DESC, id DESC",
+    `SELECT i.* FROM import i WHERE ${SAVED} ORDER BY i.period_year DESC, i.period_month DESC, i.id DESC`,
   )
   return rows as ImportRecord[]
+}
+
+/**
+ * Delete never-posted timesheets older than `hours` — uploads that stopped at
+ * the preview. Their payload, rows and run records go with them (cascade).
+ * The age keeps one someone is working through right now.
+ */
+export async function deleteUnpostedImports(hours: number): Promise<number> {
+  const [result] = await pool.query<ResultSetHeader>(
+    `DELETE i FROM import i
+     WHERE NOT ${SAVED} AND i.status IN ('DRAFT', 'FAILED')
+       AND i.created_at < NOW() - INTERVAL :hours HOUR`,
+    { hours },
+  )
+  return result.affectedRows
 }
 
 export async function getImport(id: number): Promise<ImportRecord | undefined> {
@@ -29,10 +59,10 @@ export async function getImport(id: number): Promise<ImportRecord | undefined> {
   return rows[0] as ImportRecord | undefined
 }
 
-/** A month's timesheets, oldest first. */
+/** A month's saved timesheets, oldest first (see SAVED). */
 export async function listImportsForPeriod(year: number, month: number): Promise<ImportRecord[]> {
   const [rows] = await pool.query<RowDataPacket[]>(
-    "SELECT * FROM import WHERE period_year = :year AND period_month = :month ORDER BY id",
+    `SELECT i.* FROM import i WHERE i.period_year = :year AND i.period_month = :month AND ${SAVED} ORDER BY i.id`,
     { year, month },
   )
   return rows as ImportRecord[]
