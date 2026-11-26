@@ -136,6 +136,11 @@ export async function migrate(): Promise<void> {
   // one-import-per-month key goes, and an import gets a name. Imports made
   // before this have none; they show (and post) under their file name.
   await addColumnIfMissing("import", "name", "VARCHAR(60) NULL")
+
+  // Whether a column's pay is taxed as normal monthly pay in AltomateHR's PCB
+  // rather than as a one-off (additional remuneration). Ayu Borneo's overtime
+  // is paid every month, and LHDN's form counts it with gross salary.
+  await addColumnIfMissing("column_mapping", "taxed_as_normal", "TINYINT(1) NOT NULL DEFAULT 0")
   await addIndexIfMissing("import", "idx_import_period", "(period_year, period_month)")
   await dropIndexIfExists("import", "uq_import_period")
 
