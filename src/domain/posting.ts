@@ -15,6 +15,11 @@ export type MappableColumn = {
   label: string
   /** The category used until someone saves a mapping. */
   defaultCategory: string
+  /**
+   * Pay (not a deduction), so it can be set to be taxed as normal monthly pay
+   * rather than as a one-off in PCB.
+   */
+  earning: boolean
 }
 
 export type MappableKey =
@@ -32,18 +37,30 @@ export type MappableKey =
  * is not either: it's the sheet's own total, shown for reference only.
  */
 export const MAPPABLE_COLUMNS: readonly MappableColumn[] = [
-  { key: "travelling", label: "Travelling", defaultCategory: "allowance_travel_private" },
-  { key: "meal", label: "Meal", defaultCategory: "allowance_meal" },
-  { key: "parking", label: "Parking", defaultCategory: "allowance_parking" },
-  { key: "otAmount", label: "OT", defaultCategory: "wages_overtime" },
-  { key: "commission", label: "Comm", defaultCategory: "wages_commission" },
-  { key: "bonus", label: "Bonus", defaultCategory: "wages_bonus_non_annual" },
-  { key: "unpaidLeave", label: "U/L", defaultCategory: "deduct_unpaid_leave" },
-  { key: "deduction", label: "Deduction", defaultCategory: "deduct_miscellaneous" },
+  { key: "travelling", label: "Travelling", defaultCategory: "allowance_travel_private", earning: true },
+  { key: "meal", label: "Meal", defaultCategory: "allowance_meal", earning: true },
+  { key: "parking", label: "Parking", defaultCategory: "allowance_parking", earning: true },
+  { key: "otAmount", label: "OT", defaultCategory: "wages_overtime", earning: true },
+  { key: "commission", label: "Comm", defaultCategory: "wages_commission", earning: true },
+  { key: "bonus", label: "Bonus", defaultCategory: "wages_bonus_non_annual", earning: true },
+  { key: "unpaidLeave", label: "U/L", defaultCategory: "deduct_unpaid_leave", earning: false },
+  { key: "deduction", label: "Deduction", defaultCategory: "deduct_miscellaneous", earning: false },
 ]
 
 /** Column key → category code, or null for "don't import". */
 export type ColumnMapping = Record<MappableKey, string | null>
+
+/**
+ * Earning columns whose pay AltomateHR taxes as normal monthly pay in PCB
+ * (`treatAsRecurring`), not as additional remuneration. Only changes anything
+ * for pay items AltomateHR treats as additional remuneration — overtime,
+ * commission, bonus.
+ */
+export type TaxedAsNormal = ReadonlySet<MappableKey>
+
+export function resolveTaxedAsNormal(saved: Set<string>): TaxedAsNormal {
+  return new Set(MAPPABLE_COLUMNS.filter((c) => c.earning && saved.has(c.key)).map((c) => c.key))
+}
 
 export function resolveMapping(saved: Map<string, string | null>): ColumnMapping {
   const out = {} as ColumnMapping
@@ -96,6 +113,8 @@ export type PlanLine = {
    * itself, which would pay it twice on top of the timesheet amount.
    */
   hours: number | null
+  /** Taxed as normal monthly pay in PCB (sent as `treatAsRecurring`). */
+  taxedAsNormal: boolean
 }
 
 /** The adjustment row's label: "OT 12.5 hrs (MA2 / KT)", "Travelling (PM / FD)". */
@@ -185,6 +204,8 @@ export function planCompany(input: {
   lines: (EmployeeLine & { matchedUserId: string | null })[]
   payrollEmployees: PlanPayrollEmployee[]
   mapping: ColumnMapping
+  /** Columns taxed as normal monthly pay; none when omitted. */
+  taxedAsNormal?: TaxedAsNormal
   categories: PlanCategory[]
 }): CompanyPlan {
   const { period, mapping } = input
@@ -302,6 +323,7 @@ export function planCompany(input: {
             amount: Math.abs(p.value),
             breakdown: p.breakdown,
             hours: col.key === "otAmount" && p.hours > 0 ? p.hours : null,
+            taxedAsNormal: input.taxedAsNormal?.has(col.key) ?? false,
           })
         }
         continue
@@ -337,6 +359,7 @@ export function planCompany(input: {
         amount: Math.abs(value),
         breakdown: null,
         hours: col.key === "otAmount" && round2(line.otHours) > 0 ? round2(line.otHours) : null,
+        taxedAsNormal: input.taxedAsNormal?.has(col.key) ?? false,
       })
     }
 

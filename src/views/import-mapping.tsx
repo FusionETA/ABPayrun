@@ -11,6 +11,10 @@ export type MappingColumnRow = {
   /** Selected category code, or null for "don't import". */
   selected: string | null
   defaultCategory: string
+  /** Pay, not a deduction — can be set to be taxed as normal monthly pay. */
+  earning: boolean
+  /** Taxed as normal monthly pay in PCB rather than as a one-off. */
+  taxedAsNormal: boolean
 }
 
 function money(n: number): string {
@@ -55,6 +59,9 @@ export function ImportMappingPage({
         <p class="mt-1.5 text-sm text-muted">
           Choose what each timesheet column is posted as in AltomateHR. The pay item decides
           whether EPF, SOCSO, EIS and PCB apply. Your choices are remembered for next month.
+          Tick <strong>Taxed as normal monthly pay</strong> for pay that comes every month, such as
+          overtime: PCB then counts it with the salary, as LHDN&apos;s form does, instead of taxing
+          it as a one-off like a bonus.
         </p>
       </div>
 
@@ -107,6 +114,19 @@ export function ImportMappingPage({
                           </optgroup>
                         ))}
                       </select>
+                      {col.earning ? (
+                        <label class="mt-2 flex items-center gap-2 text-xs text-muted">
+                          <input
+                            type="checkbox"
+                            name={`normal_${col.key}`}
+                            value="1"
+                            checked={col.taxedAsNormal}
+                            class="size-4 accent-[#4c1a86]"
+                          />
+                          Taxed as normal monthly pay (PCB) — only changes overtime, commission
+                          and bonus items
+                        </label>
+                      ) : null}
                     </td>
                   </tr>
                 ))}

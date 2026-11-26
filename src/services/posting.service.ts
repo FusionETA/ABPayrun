@@ -9,6 +9,8 @@ import {
   resolveMapping,
   salaryEffectiveDate,
   type ColumnMapping,
+  type TaxedAsNormal,
+  resolveTaxedAsNormal,
   type CompanyPlan,
 } from "../domain/posting"
 import type { ParsedTimesheet } from "../domain/timesheet"
@@ -32,7 +34,7 @@ import {
   updateImportStatus,
   type ImportRecord,
 } from "../repositories/import.repository"
-import { listColumnMappings } from "../repositories/mapping.repository"
+import { listColumnMappings, listColumnsTaxedAsNormal } from "../repositories/mapping.repository"
 import { listRunsForImport, recordRun, type PostedRun } from "../repositories/run.repository"
 import {
   AltomateApiError,
@@ -145,6 +147,10 @@ export async function currentMapping(): Promise<ColumnMapping> {
   return resolveMapping(await listColumnMappings())
 }
 
+export async function currentTaxedAsNormal(): Promise<TaxedAsNormal> {
+  return resolveTaxedAsNormal(await listColumnsTaxedAsNormal())
+}
+
 export type CompanyPostingPlan = {
   code: string
   companyName: string
@@ -195,9 +201,10 @@ export async function buildPostingPlan(importId: number): Promise<PostingPlan | 
   const imp = await loadImport(importId)
   if (!imp) return null
 
-  const [companies, mapping, categories, posted] = await Promise.all([
+  const [companies, mapping, taxedAsNormal, categories, posted] = await Promise.all([
     listCompanies(),
     currentMapping(),
+    currentTaxedAsNormal(),
     loadMappableCategories(),
     listRunsForImport(importId),
   ])
@@ -254,6 +261,7 @@ export async function buildPostingPlan(importId: number): Promise<PostingPlan | 
         lines: v.employees.map((e) => ({ ...e, matchedUserId: e.match.altomateId })),
         payrollEmployees,
         mapping,
+        taxedAsNormal,
         categories,
       })
       // Outlets must match too — the same all-or-nothing gate as the preview.
@@ -590,7 +598,9 @@ export async function postImport(importId: number, postedBy: string): Promise<Po
               // "Travelling (MA2 / KT)", "OT 12.5 hrs (MA2 / KT)" — one row per outlet and group.
               label: lineLabel(l),
               amount: l.amount,
-              treatAsRecurring: false,
+              // Taxed as normal monthly pay in PCB when the column is set so
+              // (Map columns page) — e.g. overtime paid every month.
+              treatAsRecurring: l.taxedAsNormal,
             })),
             notes: note,
           })

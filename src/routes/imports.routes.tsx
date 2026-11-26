@@ -19,6 +19,7 @@ import { AltomateApiError } from "../services/altomate.service"
 import {
   buildPostingPlan,
   currentMapping,
+  currentTaxedAsNormal,
   loadImport,
   loadMappableCategories,
   postImport,
@@ -95,13 +96,15 @@ importsRoutes.get("/imports/:id/mapping", requireAuth, async (c) => {
       err instanceof AltomateApiError ? err.message : "Couldn't load AltomateHR's pay items."
     return c.redirect(`/convert?err=${encodeURIComponent(msg)}`)
   }
-  const mapping = await currentMapping()
+  const [mapping, taxedAsNormal] = await Promise.all([currentMapping(), currentTaxedAsNormal()])
   const lines = imp.parsed.companies.flatMap((g) => g.employees)
   const columns = MAPPABLE_COLUMNS.map((col) => ({
     key: col.key,
     label: col.label,
     defaultCategory: col.defaultCategory,
     selected: mapping[col.key],
+    earning: col.earning,
+    taxedAsNormal: taxedAsNormal.has(col.key),
     total: round2(lines.reduce((s, l) => s + Math.abs(l[col.key]), 0)),
     employees: lines.filter((l) => l[col.key] !== 0).length,
   }))
@@ -138,7 +141,11 @@ importsRoutes.post("/imports/:id/mapping", requireAuth, async (c) => {
   await saveColumnMappings(
     MAPPABLE_COLUMNS.map((col) => {
       const v = String(body[`map_${col.key}`] ?? "")
-      return { columnKey: col.key, categoryCode: valid.has(v) ? v : null }
+      return {
+        columnKey: col.key,
+        categoryCode: valid.has(v) ? v : null,
+        taxedAsNormal: col.earning && body[`normal_${col.key}`] === "1",
+      }
     }),
     user.email,
   )
